@@ -1,0 +1,13 @@
+node_modules
+dist
+dev-dist
+.DS_Store
+*.local
+coverage
+ios/App/Pods
+ios/App/App/public
+ios/App/App/capacitor.config.json
+ios/App/App/config.xml
+ios/DerivedData
+.env*
+!.env.example
