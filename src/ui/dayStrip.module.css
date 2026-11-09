@@ -1,0 +1,10 @@
+.strip { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: 0 calc(-1 * var(--gutter-r)) 0 calc(-1 * var(--gutter)); padding: 4px var(--gutter-r) 6px var(--gutter); scroll-snap-type: x proximity; }
+.strip::-webkit-scrollbar { display: none; }
+.day { flex: none; scroll-snap-align: center; border-radius: 20px; padding: 8px 12px 9px; background: var(--surface); box-shadow: var(--shadow-1); display: grid; justify-items: center; line-height: 1.15; min-width: 64px; position: relative; transition: background var(--dur-2), color var(--dur-2), transform var(--dur-1); }
+.day:active { transform: scale(0.96); }
+.day small { font-size: 10px; color: var(--muted); letter-spacing: 0.08em; font-weight: 600; }
+.day b { font-size: 17px; font-weight: 700; margin-top: 2px; }
+.day span { font-size: 11px; color: var(--muted); }
+.day[aria-pressed='true'] { background: var(--night); color: var(--night-ink); }
+.day[aria-pressed='true'] small, .day[aria-pressed='true'] span { color: var(--night-muted); }
+.today::after { content: ''; position: absolute; top: 7px; right: 8px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }

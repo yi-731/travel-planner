@@ -54,3 +54,8 @@ export interface ReceiptResult {
 export async function scanReceipt(_trip: Trip, _image: Blob, _signal?: AbortSignal): Promise<ReceiptResult> {
   throw new Error('TODO');
 }
+
+/** 用最小請求測試金鑰是否可用（設定頁「測試連線」） */
+export async function testConnection(): Promise<void> {
+  throw new Error('TODO');
+}
