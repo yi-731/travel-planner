@@ -1,0 +1,38 @@
+# 每次 push 或開 Pull Request：型別檢查 → 單元測試 → 建置。失敗會在 GitHub 上顯示紅色叉叉。
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 型別檢查、測試、建置
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安裝套件
+        run: npm ci
+
+      - name: 型別檢查
+        run: npm run typecheck
+
+      - name: 單元測試
+        run: npm test
+
+      - name: 建置
+        run: npm run build

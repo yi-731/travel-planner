@@ -1,0 +1,59 @@
+# 推到 main 分支就自動建置並發布到 GitHub Pages（約 2 分鐘）。
+# 第一次使用前：GitHub 專案 → Settings → Pages → Source 選「GitHub Actions」（只要設定一次）。
+name: 部署到 GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時只跑一個部署；正在部署的不取消，避免網站只更新一半
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 建置網站
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安裝套件
+        run: npm ci
+
+      - name: 建置
+        run: npm run build
+        env:
+          # 網址是 https://<帳號>.github.io/<專案名>/ ，所以網站放在 /<專案名>/ 底下；
+          # 若專案名就是 <帳號>.github.io，網站在根目錄 /
+          BASE_PATH: ${{ endsWith(github.event.repository.name, '.github.io') && '/' || format('/{0}/', github.event.repository.name) }}
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: 發布
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

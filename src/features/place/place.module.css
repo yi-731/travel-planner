@@ -1,0 +1,187 @@
+/* 地點頁 — 顏色、字體、間距只用 tokens.css 的變數（社群品牌色點除外） */
+
+/* ---------- 標題卡：類型色光球＋霧面玻璃 ---------- */
+/* 上方留白給彈出頁的把手與關閉鈕，避免關閉鈕壓在卡片圓角上 */
+.heroWrap { margin-top: 26px; min-width: 0; }
+.hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 10px;
+  min-width: 0;
+}
+.hero .tint {
+  z-index: -1;
+  background: radial-gradient(
+    circle at 34% 30%,
+    color-mix(in srgb, var(--c) 18%, var(--orb-1)) 0%,
+    color-mix(in srgb, var(--c) 62%, var(--orb-1)) 36%,
+    var(--c) 68%,
+    color-mix(in srgb, var(--c) 70%, var(--night)) 100%
+  );
+}
+.heroDone .tint { opacity: 0.55; }
+.glass {
+  position: relative;
+  border-radius: calc(var(--r-lg) - 8px);
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+  padding: 14px 16px 14px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.heroTop { display: flex; align-items: center; gap: 10px; min-height: 20px; }
+.doneBadge { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs); font-weight: 700; color: var(--good); }
+.title { font-size: 30px; font-weight: 750; line-height: 1.15; letter-spacing: -0.02em; overflow-wrap: anywhere; color: var(--ink); }
+.metaRow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0; margin-top: 2px; }
+.meta { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); min-width: 0; }
+.wx {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px 3px 8px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.wxTag { font-size: 10px; color: var(--muted); font-weight: 600; }
+
+/* ---------- 四個動作 ---------- */
+.actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; min-width: 0; }
+.action {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 7px;
+  min-height: 84px;
+  padding: 12px 4px 10px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  text-decoration: none;
+  color: var(--ink);
+  min-width: 0;
+  transition: transform var(--dur-1) var(--ease-out), opacity var(--dur-1);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.action:active:not([disabled]) { transform: scale(0.95); }
+.action[disabled] { opacity: 0.42; cursor: default; }
+.badge {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--surface-3);
+  color: var(--ink);
+}
+.primary .badge { background: var(--accent); color: var(--accent-ink); box-shadow: 0 6px 14px -6px color-mix(in srgb, var(--accent) 70%, transparent); }
+.warn .badge { background: color-mix(in srgb, var(--warn) 16%, var(--surface)); color: var(--warn); }
+.warn .actionLabel { color: var(--warn); }
+.actionLabel { font-size: var(--fs-sm); font-weight: 600; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+/* ---------- 資訊清單 ---------- */
+.facts { margin: 0; background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-1); overflow: hidden; }
+.fact { position: relative; padding: 12px 16px 13px; display: grid; gap: 2px; min-width: 0; }
+.fact + .fact::before { content: ''; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--line); }
+.factLabel { font-size: var(--fs-xs); font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+.factValue { margin: 0; display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 24px; }
+.factText { flex: 1; min-width: 0; font-size: var(--fs-md); line-height: 1.45; color: var(--ink); overflow-wrap: anywhere; }
+.selectable { -webkit-user-select: text; user-select: text; }
+.sep { color: var(--faint); }
+.soft { color: var(--muted); }
+.cur { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); }
+.note { white-space: pre-wrap; color: var(--ink-2); }
+.host { color: var(--ink); }
+/* 小膠囊按鈕：外觀 32px，點擊範圍擴到 44px */
+.factBtn {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 32px;
+  padding: 0 12px;
+  margin: -4px 0;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-decoration: none;
+  transition: transform var(--dur-1) var(--ease-out);
+}
+.factBtn::after { content: ''; position: absolute; inset: -6px -4px; }
+.factBtn:active { transform: scale(0.95); }
+.rating { display: inline-flex; align-items: center; gap: 8px; }
+.stars {
+  position: relative;
+  font-size: 15px;
+  letter-spacing: 2px;
+  color: var(--surface-3);
+  line-height: 1;
+}
+.stars::before {
+  content: '★★★★★';
+  position: absolute;
+  inset: 0;
+  width: var(--pct, 0%);
+  overflow: hidden;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.factsEmpty {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 16px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+/* ---------- 口碑 ---------- */
+.section { display: grid; gap: 10px; min-width: 0; }
+.secTitle { font-size: var(--fs-sm); font-weight: 600; color: var(--muted); padding: 0 6px; }
+.socials { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.social {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px 0 12px;
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: transform var(--dur-1) var(--ease-out), background var(--dur-1);
+}
+.social::after { content: ''; position: absolute; inset: -2px; }
+.social:active { transform: scale(0.96); background: var(--surface-2); }
+.brandDot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--surface) 60%, transparent); }
+
+/* ---------- 底部 ---------- */
+.foot { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }

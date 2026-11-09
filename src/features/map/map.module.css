@@ -1,0 +1,223 @@
+/* 地圖分頁 — 只用 tokens.css 的變數 */
+.page { display: grid; gap: 16px; min-width: 0; }
+
+/* ---------- 地圖卡 ---------- */
+/* 捲回地圖時留出頂部列的高度；陰影放外層（內層的 clip-path 會把陰影一起裁掉） */
+.mapBox { min-width: 0; border-radius: var(--r-lg); box-shadow: var(--shadow-1); scroll-margin-top: calc(env(safe-area-inset-top, 0px) + 68px); }
+/* isolation：Leaflet 圖層的 z-index（400～1000）只在卡片內比較，不會蓋過頂部列、分頁列與彈出頁 */
+.mapCard {
+  position: relative;
+  isolation: isolate;
+  z-index: 0;
+  height: min(56dvh, 460px);
+  min-height: 300px;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  clip-path: inset(0 round var(--r-lg));
+  background: var(--surface-2);
+}
+.leaflet { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--surface-2); font-family: var(--f-ui); }
+.mapCard :global(.leaflet-container) { font-family: var(--f-ui); -webkit-tap-highlight-color: transparent; }
+
+/* 圖磚來源標示：小字、玻璃底 */
+.mapCard :global(.leaflet-control-attribution) {
+  font-size: 9px;
+  line-height: 1.6;
+  padding: 0 8px;
+  margin: 0;
+  color: var(--muted);
+  background: var(--bg-glass);
+  border-top-left-radius: 9px;
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.mapCard :global(.leaflet-control-attribution a) { color: var(--ink-2); text-decoration: none; }
+.mapCard :global(.leaflet-bottom) { transition: bottom var(--dur-2) var(--ease-out); }
+/* 底部有選取小卡時，把來源標示推到小卡上方 */
+.hasCallout :global(.leaflet-bottom) { bottom: 78px; }
+.hasCallout :global(.leaflet-control-attribution) { border-radius: 9px 0 0 9px; }
+
+/* 路線：虛線圓點（顏色用 CSS 才能吃到變數，蓋過 Leaflet 寫在 SVG 上的 stroke） */
+.route { stroke: var(--accent); stroke-opacity: 0.9; }
+
+/* ---------- 標記 ---------- */
+.pinHost { background: none; border: 0; }
+.pin {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--c, var(--t-other));
+  color: var(--accent-ink);
+  font: 700 13px/1 var(--f-ui);
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px var(--accent-ink), 0 3px 9px color-mix(in srgb, var(--night) 45%, transparent);
+  cursor: pointer;
+}
+.pinDone { opacity: 0.42; filter: saturate(0.55); }
+.pinSel {
+  font-size: 16px;
+  box-shadow: 0 0 0 2.5px var(--accent-ink), 0 0 0 7px color-mix(in srgb, var(--c) 30%, transparent), 0 6px 16px color-mix(in srgb, var(--night) 50%, transparent);
+  animation: pinPop 320ms var(--ease-spring);
+}
+@keyframes pinPop { from { transform: scale(0.72); } }
+
+/* 目前位置：藍點＋脈動光圈 */
+.me {
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--info);
+  box-shadow: 0 0 0 3px var(--accent-ink), 0 2px 8px color-mix(in srgb, var(--night) 45%, transparent);
+}
+.me::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  z-index: -1;
+  border-radius: 50%;
+  background: var(--info);
+  animation: mePulse 2s var(--ease-out) infinite;
+}
+@keyframes mePulse {
+  from { transform: scale(1); opacity: 0.45; }
+  to { transform: scale(3.4); opacity: 0; }
+}
+
+/* ---------- 疊在地圖上的玻璃元件 ---------- */
+.topLeft { position: absolute; z-index: 1000; top: 12px; left: 12px; right: 68px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; pointer-events: none; }
+.glassPill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--r-pill);
+  background: var(--bg-glass);
+  border: 1px solid var(--glass-line);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: var(--shadow-1);
+  color: var(--ink);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.glassPill > :global([role='status']) { width: 13px; height: 13px; color: var(--accent); flex: none; }
+.pillWarn { color: var(--warn); }
+
+.ctrls { position: absolute; z-index: 1000; top: 12px; right: 12px; display: grid; gap: 8px; }
+.ctrl {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  background: var(--bg-glass);
+  border: 1px solid var(--glass-line);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: var(--shadow-1);
+  transition: transform var(--dur-1) var(--ease-out);
+}
+.ctrl:active { transform: scale(0.92); }
+.ctrl[aria-busy='true'] { color: var(--accent); }
+
+/* 選取站點的小卡 */
+.callout {
+  position: absolute;
+  z-index: 1000;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  border-radius: calc(var(--r-lg) - 8px);
+  background: var(--bg-glass);
+  border: 1px solid var(--glass-line);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+  box-shadow: var(--shadow-2);
+  animation: calloutIn var(--dur-2) var(--ease-out);
+}
+@keyframes calloutIn { from { opacity: 0; transform: translateY(10px); } }
+.calloutMain { flex: 1; min-width: 0; min-height: 48px; display: flex; align-items: center; gap: 10px; text-align: left; }
+.calloutText { min-width: 0; display: grid; gap: 1px; }
+.calloutTitle { font-weight: 700; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.calloutSub { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- 編號圓章（清單、小卡共用，和地圖標記同色） ---------- */
+.badge {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--c, var(--t-other));
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  transition: box-shadow var(--dur-2) var(--ease-out);
+}
+.badgeDone { opacity: 0.42; }
+/* 沒有座標：虛線空心 */
+.badgeHollow { background: transparent; color: var(--c, var(--t-other)); border: 1.5px dashed var(--c, var(--t-other)); }
+
+/* ---------- 當天摘要＋整天路線 ---------- */
+.dayBar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 0 2px 0 4px; }
+.dayStat { min-width: 0; display: grid; gap: 2px; }
+.dayStat > :global(.eyebrow) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dayNums { display: flex; align-items: baseline; gap: 4px; white-space: nowrap; min-width: 0; }
+.dayNums > :global(.serif) { font-size: 44px; line-height: 0.95; letter-spacing: -0.02em; color: var(--ink); }
+.unit { font-size: var(--fs-md); font-weight: 700; color: var(--ink); }
+.km { margin-left: 8px; font-size: var(--fs-sm); font-weight: 600; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- 附近快捷 ---------- */
+.quick { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 14px 6px 12px; background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-1); }
+.q { display: grid; justify-items: center; gap: 7px; min-height: 44px; padding: 2px; text-decoration: none; border-radius: var(--r-md); transition: transform var(--dur-1) var(--ease-out); }
+.q:active { transform: scale(0.94); }
+.qIcon { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+.qLabel { font-size: 12px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+
+/* ---------- 站點清單 ---------- */
+.section { display: grid; gap: 10px; min-width: 0; }
+.secHead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 4px; min-width: 0; }
+.secTitle { font-size: var(--fs-xl); font-weight: 700; letter-spacing: -0.01em; }
+.legend { display: flex; align-items: center; gap: 10px; font-size: var(--fs-xs); font-weight: 600; color: var(--muted); white-space: nowrap; }
+.legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { font-style: normal; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); font-size: 10px; font-weight: 800; }
+
+.list { list-style: none; margin: 0; padding: 0; background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-1); overflow: hidden; }
+.stop { position: relative; display: flex; align-items: center; padding-right: 6px; transition: background var(--dur-2) var(--ease-out); }
+.stop + .stop::before { content: ''; position: absolute; top: 0; left: 56px; right: 0; border-top: 1px solid var(--line); }
+.stop:has(.stopMain:active) { background: var(--surface-2); }
+.stopMain { flex: 1; min-width: 0; min-height: 64px; display: flex; align-items: center; gap: 12px; padding: 10px 4px 10px 16px; text-align: left; }
+.stopText { min-width: 0; display: grid; gap: 2px; }
+.stopTitle { font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stopSub { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: var(--fs-sm); color: var(--muted); white-space: nowrap; overflow: hidden; }
+.stopSub b { flex: none; font-weight: 650; color: var(--ink-2); }
+.addr { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.status { flex: none; color: var(--warn); font-weight: 600; }
+.statusPending { color: var(--muted); font-weight: 500; }
+
+.isSel { background: var(--accent-soft); }
+.isSel .badge { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 28%, transparent); }
+.isDone .stopTitle { color: var(--muted); font-weight: 500; text-decoration: line-through; text-decoration-color: var(--faint); }
+.isDone .stopSub b { color: var(--muted); }
+
+.navs { flex: none; display: flex; }
+.nav { width: 44px; height: 44px; display: grid; place-items: center; text-decoration: none; }
+.nav span { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-3); color: var(--ink-2); font-size: 12px; font-weight: 800; transition: transform var(--dur-1) var(--ease-out), background var(--dur-1), color var(--dur-1); }
+.nav:active span { transform: scale(0.9); background: var(--night); color: var(--night-ink); }
+
+.emptyCard { background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-1); padding: 0 8px 18px; }

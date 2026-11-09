@@ -1,0 +1,154 @@
+# 手動執行：建置原生 iOS App 並上傳到 TestFlight。
+# 用法：GitHub 專案 → Actions → 「iOS 上傳 TestFlight」→ Run workflow。
+# 需要先在 Settings → Secrets and variables → Actions 設好 4 個 Secrets（步驟見 docs/ios-testflight.md）：
+#   ASC_KEY_ID          App Store Connect API 金鑰 ID（10 碼）
+#   ASC_ISSUER_ID       Issuer ID（UUID 格式）
+#   ASC_KEY_P8_BASE64   .p8 金鑰檔的 base64（直接貼 .p8 全文也可以）
+#   APPLE_TEAM_ID       Apple 開發者團隊 ID（10 碼）
+# 版本號：package.json 的 version（例如 1.0.0）；建置號：這個流程的執行次數（自動遞增）。
+name: iOS 上傳 TestFlight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    name: 建置並上傳
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ARCHIVE_PATH: build/App.xcarchive
+      EXPORT_PATH: build/export
+    steps:
+      - name: 檢查 Secrets
+        run: |
+          missing=""
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8_BASE64 APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::缺少 Secrets：$missing。請到 Settings → Secrets and variables → Actions 新增（說明見 docs/ios-testflight.md）。"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 選用最新的正式版 Xcode
+        run: |
+          latest=$(ls -d /Applications/Xcode_[0-9]*.app 2>/dev/null | grep -viE 'beta|release_candidate|_rc' | sort -V | tail -n 1 || true)
+          if [ -n "$latest" ]; then sudo xcode-select -s "$latest/Contents/Developer"; fi
+          xcodebuild -version
+          # 部分映像檔的新版 Xcode 沒有預先下載 iOS 平台
+          if ! xcodebuild -showsdks 2>/dev/null | grep iphoneos > /dev/null; then xcodebuild -downloadPlatform iOS; fi
+
+      - name: 安裝套件
+        run: npm ci
+
+      - name: 建置網頁
+        run: npm run build
+
+      - name: 同步到 iOS 專案
+        run: npx cap sync ios
+
+      - name: 設定版本號與建置號
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          # 同一次執行按「Re-run」時建置號仍要不同，所以加上重試次數：例如 12.1、12.2
+          BUILD="${{ github.run_number }}.${{ github.run_attempt }}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" ios/App/App/Info.plist
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "APP_BUILD=$BUILD" >> "$GITHUB_ENV"
+          echo "版本 $VERSION（建置 $BUILD）"
+
+      - name: 準備 App Store Connect API 金鑰
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          if [[ "$ASC_KEY_P8_BASE64" == *"BEGIN PRIVATE KEY"* ]]; then
+            printf '%s\n' "$ASC_KEY_P8_BASE64" > "$KEY_PATH"
+          else
+            printf '%s' "$ASC_KEY_P8_BASE64" | tr -d '\r\n ' | base64 --decode > "$KEY_PATH"
+          fi
+          if ! grep -q 'BEGIN PRIVATE KEY' "$KEY_PATH"; then
+            echo "::error::ASC_KEY_P8_BASE64 解不出 .p8 金鑰。請重新用 base64 轉換 AuthKey_XXXX.p8（見 docs/ios-testflight.md 第 3 步）。"
+            exit 1
+          fi
+          chmod 600 "$KEY_PATH"
+          echo "ASC_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: 封存（Archive）
+        run: |
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$ARCHIVE_PATH" \
+            archive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic
+
+      - name: 匯出並上傳到 TestFlight
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>destination</key>
+            <string>upload</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key>
+            <false/>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$EXPORT_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: 摘要
+        run: |
+          {
+            echo "### 已上傳 旅途手帳 ${APP_VERSION}（建置 ${APP_BUILD}）"
+            echo ""
+            echo "Apple 處理約 5～30 分鐘後，會出現在 App Store Connect → TestFlight，並寄信通知。"
+            echo "iPhone 上打開 TestFlight App 即可安裝更新。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 清除金鑰檔
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/AuthKey_*.p8

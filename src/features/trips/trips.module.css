@@ -1,0 +1,69 @@
+/* 旅程：選擇旅程（大字轉盤）＋新增行程 — 只用 tokens.css 的變數 */
+
+/* ---------- 選擇旅程 ---------- */
+.dial { list-style: none; margin: 0; padding: 0 0 4px; display: grid; gap: 2px; min-width: 0; }
+.dial > li { min-width: 0; }
+.trip {
+  width: 100%;
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: start;
+  padding: 10px 2px 12px 0;
+  text-align: left;
+  opacity: 0.38;
+  border-radius: var(--r-md);
+  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-1) var(--ease-out);
+}
+.trip:active { transform: scale(0.985); opacity: 0.62; }
+.active, .active:active { opacity: 1; }
+/* 點的高度對齊城市大字第一行 */
+.dotCol { height: 44px; display: flex; align-items: center; justify-content: flex-start; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink); opacity: 0; transform: scale(0.4); transition: opacity var(--dur-2), transform var(--dur-2) var(--ease-spring); }
+.active .dot { opacity: 1; transform: none; background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.tripText { display: grid; gap: 4px; min-width: 0; }
+.city { font-size: 44px; line-height: 1; text-transform: uppercase; letter-spacing: -0.012em; color: var(--ink); overflow-wrap: anywhere; margin-left: -0.02em; }
+.cityCjk { font-family: var(--f-ui); font-weight: 800; font-size: 34px; line-height: 1.29; letter-spacing: -0.02em; color: var(--ink); overflow-wrap: anywhere; }
+.sub { font-size: var(--fs-sm); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.active .sub { color: var(--ink-2); }
+.footRow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+
+/* ---------- 新增行程：預覽卡 ---------- */
+.preview {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 184px;
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-1);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.preview > span:not(.previewGlass) { z-index: -1; }
+.previewGlass {
+  position: relative;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 12px 14px 11px;
+  border-radius: calc(var(--r-lg) - 8px);
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+}
+.previewEyebrow { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.previewCity { font-size: 42px; line-height: 1.02; text-transform: uppercase; letter-spacing: -0.012em; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: -0.02em; }
+.previewCjk { font-family: var(--f-ui); font-weight: 800; font-size: 30px; line-height: 1.43; letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.previewEmpty { font-family: var(--f-ui); font-weight: 800; font-size: 30px; line-height: 1.43; letter-spacing: -0.02em; color: var(--faint); }
+.previewMeta { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--ink-2); min-width: 0; }
+.previewMeta > :first-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.previewFx { margin-left: auto; flex: none; font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.06em; color: var(--ink-2); }
+
+.err { color: var(--bad); font-weight: 600; }
+/* 欄位下方的獨立錯誤列：抵銷 Sheet 內容的 16px 間距，貼近欄位 */
+.errLine { color: var(--bad); font-size: var(--fs-sm); font-weight: 600; margin-top: -8px; }

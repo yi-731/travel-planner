@@ -1,0 +1,130 @@
+/* 天氣頁 — 顏色、字體、間距只用 tokens.css 的變數 */
+
+/* ---------- 標題（日期範圍用襯線大字） ---------- */
+.titleSerif { display: inline-block; font-family: var(--f-display); font-weight: 400; font-size: 36px; line-height: 1; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; padding-top: 2px; }
+.titleDash { margin: 0 0.16em; color: var(--muted); }
+
+.noteAct { display: flex; gap: 8px; margin-top: 6px; }
+
+/* ---------- 焦點卡：日落光球＋霧面玻璃 ---------- */
+.focus {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-1);
+  padding: 16px 10px 10px;
+  min-width: 0;
+}
+.focus > span { z-index: -1; }
+.focusIn { display: grid; gap: 4px; min-width: 0; }
+.focusTop { display: flex; align-items: center; gap: 8px; min-height: 22px; padding: 0 8px; }
+.focusEyebrow { color: var(--ink-2); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.focusMain { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 0 8px 14px; max-width: 76%; }
+.focusTemp { font-size: 76px; line-height: 0.9; letter-spacing: -0.03em; color: var(--ink); flex: none; margin-left: -4px; }
+.focusDesc { display: grid; gap: 2px; min-width: 0; }
+.focusLabel { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-lg); font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
+.focusRange { font-size: var(--fs-sm); color: var(--ink-2); font-weight: 600; }
+.focusGlass {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 62px;
+  border-radius: calc(var(--r-lg) - 8px);
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+  padding: 10px 12px 10px 16px;
+  min-width: 0;
+}
+.stats { flex: 1; margin: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
+.stat { display: grid; gap: 0; min-width: 0; }
+.stat dt { font-size: var(--fs-xs); color: var(--muted); font-weight: 600; letter-spacing: 0.04em; white-space: nowrap; }
+.stat dd { margin: 0; font-size: 24px; line-height: 1.1; color: var(--ink); white-space: nowrap; }
+.statsNone { flex: 1; font-size: var(--fs-sm); color: var(--muted); }
+.kindOnGlass { align-self: center; }
+
+/* ---------- 預報／歷年平均標籤（預報是常態，用淡字；歷年平均要提醒，用色塊） ---------- */
+.kind { flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; line-height: 1; padding: 4px 0; color: var(--muted); white-space: nowrap; }
+.kindClimate { padding: 4px 7px; border-radius: var(--r-pill); color: var(--info); background: color-mix(in srgb, var(--info) 13%, transparent); }
+.kindOnGlass:not(.kindClimate) { padding: 4px 7px; border-radius: var(--r-pill); color: var(--ink-2); background: color-mix(in srgb, var(--surface) 70%, transparent); }
+
+/* ---------- 每日列表 ---------- */
+.daysWrap { display: grid; gap: 8px; min-width: 0; }
+.days { list-style: none; margin: 0; padding: 0; background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-1); overflow: hidden; min-width: 0; }
+.days > * { position: relative; }
+.days > * + *::before { content: ''; position: absolute; z-index: 1; top: 0; left: 16px; right: 0; border-top: 1px solid var(--line); }
+.row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 86px 38px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 66px;
+  padding: 10px 16px;
+  text-align: left;
+  color: var(--ink);
+  transition: background var(--dur-1);
+}
+button.row:active { background: var(--surface-2); }
+.selected { background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.selected::after { content: ''; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+.dayHead { display: grid; gap: 1px; min-width: 0; }
+.dayName { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-md); font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
+.dayDate { font-size: 12px; color: var(--muted); font-weight: 500; white-space: nowrap; }
+.todayTag { font-size: 10px; font-weight: 700; line-height: 1; padding: 3px 6px; border-radius: var(--r-pill); background: var(--accent); color: var(--accent-ink); }
+.isToday .dayName { color: var(--accent); }
+.iconCol { display: grid; justify-items: center; gap: 2px; color: var(--ink-2); }
+.rain { font-size: 11px; font-weight: 700; color: var(--info); line-height: 1; white-space: nowrap; }
+.noIcon { color: var(--faint); }
+.noData { font-size: var(--fs-sm); color: var(--muted); }
+.mainCol { display: grid; gap: 7px; min-width: 0; }
+.labelLine { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wxLabel { flex: 1; min-width: 0; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.temps { display: grid; grid-template-columns: 30px minmax(0, 1fr) 30px; align-items: center; gap: 8px; }
+.tLo { font-size: var(--fs-md); font-weight: 600; color: var(--muted); text-align: right; }
+.tHi { font-size: var(--fs-md); font-weight: 700; color: var(--ink); }
+.track { position: relative; height: 6px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
+/* 漸層對應整趟旅程的溫度刻度（越左越冷），再裁出這天的範圍 */
+.fill {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-pill);
+  background: linear-gradient(90deg, var(--info) 0%, var(--t-stay) 34%, var(--orb-2) 68%, var(--accent) 100%);
+  clip-path: inset(0 var(--r, 0%) 0 var(--l, 0%) round 999px);
+}
+.footnote { font-size: var(--fs-xs); color: var(--muted); line-height: 1.5; padding: 0 6px; }
+
+/* ---------- 載入中 ---------- */
+.skelRow { pointer-events: none; }
+.skel { display: block; border-radius: 6px; background: var(--surface-3); animation: skelPulse 1.4s ease-in-out infinite; }
+.skelA { width: 46px; height: 14px; }
+.skelB { width: 64px; height: 10px; margin-top: 4px; }
+.skelIcon { width: 24px; height: 24px; border-radius: 50%; }
+.skelBar { width: 100%; height: 6px; border-radius: var(--r-pill); }
+@keyframes skelPulse { 50% { opacity: 0.45; } }
+
+/* ---------- AI 穿搭建議 ---------- */
+.section { display: grid; gap: 10px; min-width: 0; }
+.secTitle { font-size: var(--fs-sm); font-weight: 600; color: var(--muted); padding: 0 6px; }
+.pack { background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-1); padding: 16px; display: grid; gap: 12px; min-width: 0; }
+.packText { font-size: var(--fs-md); line-height: 1.6; color: var(--ink); overflow-wrap: anywhere; }
+.packIntro { font-size: var(--fs-sm); line-height: 1.55; color: var(--ink-2); }
+.packHint { font-size: var(--fs-xs); color: var(--muted); text-align: center; margin-top: -4px; }
+.tips { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.tips li { position: relative; padding-left: 18px; font-size: var(--fs-sm); line-height: 1.55; color: var(--ink-2); overflow-wrap: anywhere; }
+.tips li::before { content: ''; position: absolute; left: 3px; top: 0.62em; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.packFoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); min-height: 44px; margin-bottom: -6px; }
+.packMeta { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--muted); min-width: 0; }
+.packFoot button { min-height: 44px; }
+
+/* ---------- 資料來源 ---------- */
+.source { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 2px 0 6px; }
+.sourceText { font-size: var(--fs-xs); color: var(--muted); }
+.refresh { flex: none; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); color: var(--ink-2); box-shadow: var(--shadow-1); transition: transform var(--dur-1) var(--ease-out); }
+.refresh:active:not([disabled]) { transform: scale(0.92); }
+.refresh[disabled] { cursor: default; color: var(--muted); }

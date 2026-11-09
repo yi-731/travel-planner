@@ -1,0 +1,181 @@
+/* 「更多」分頁、行程設定、App 設定的專屬樣式。顏色、字體、間距只用 tokens.css 的變數。 */
+
+.more { display: grid; gap: 22px; min-width: 0; }
+.titleRow { display: inline-flex; align-items: center; gap: 8px; }
+.badText { color: var(--bad); }
+
+/* ---------- 目前行程卡（封面或光球＋霧面玻璃） ---------- */
+.tripCard,
+.emptyCard {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  width: 100%;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  display: flex;
+  align-items: flex-end;
+  padding: 12px;
+  text-align: left;
+}
+.tripCard { min-height: 180px; transition: transform var(--dur-1) var(--ease-out); }
+.tripCard:active { transform: scale(0.985); }
+.emptyCard { min-height: 264px; padding: 14px; }
+.coverImg { position: absolute; inset: 0; background-size: cover; background-position: center; }
+.hasCover .coverImg::after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, transparent 40%, color-mix(in srgb, var(--night) 28%, transparent)); }
+
+.glass,
+.emptyGlass {
+  position: relative;
+  width: 100%;
+  border-radius: 20px;
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  backdrop-filter: blur(24px) saturate(1.3);
+}
+.glass { display: flex; align-items: flex-end; gap: 12px; padding: 12px 12px 12px 16px; }
+.glassText { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.cardEyebrow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cardEyebrow :global(.eyebrow) { color: var(--ink-2); }
+.route { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.badge { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; padding: 1px 7px; border-radius: var(--r-pill); background: var(--accent-soft); color: var(--accent); }
+.city { font-size: 46px; line-height: 0.98; padding-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cityCjk { font-size: 30px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.2; padding-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cardMeta { font-size: var(--fs-sm); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.goPill { flex: none; display: inline-flex; align-items: center; gap: 10px; min-height: 36px; padding: 3px 3px 3px 14px; border-radius: var(--r-pill); background: var(--night); color: var(--night-ink); font-size: var(--fs-sm); font-weight: 600; }
+.goDot { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink); }
+
+.emptyGlass { display: grid; gap: 10px; padding: 18px; }
+.emptyTitle { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; }
+.emptyBody { font-size: 14px; color: var(--ink-2); }
+
+/* 封面縮圖（清單右側） */
+.thumb { width: 34px; height: 34px; border-radius: 9px; background-size: cover; background-position: center; box-shadow: inset 0 0 0 1px var(--line); }
+
+/* ---------- 清單內展開的面板 ---------- */
+.inlinePanel { overflow: hidden; border-top: 1px solid var(--line); }
+.inlineIn { padding: 14px 16px 14px; display: grid; gap: 8px; background: var(--surface-2); }
+.inlineTitle { font-size: var(--fs-md); font-weight: 700; }
+.inlineBody { font-size: var(--fs-sm); color: var(--ink-2); line-height: 1.55; }
+.miniSteps { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: var(--fs-sm); color: var(--ink-2); line-height: 1.5; }
+.miniSteps li::marker { color: var(--accent); font-weight: 700; }
+.caret { transition: transform var(--dur-2) var(--ease-out); }
+.caretOpen { transform: rotate(180deg); }
+
+/* ---------- 安裝到主畫面：三步驟圖解 ---------- */
+.install { list-style: none; margin: 0; padding: 14px 16px 16px; display: grid; gap: 12px; background: var(--surface-2); }
+.step { display: grid; grid-template-columns: 92px 1fr; gap: 14px; align-items: center; min-width: 0; }
+.illo { width: 92px; height: 64px; border-radius: 14px; background: var(--bg); box-shadow: inset 0 0 0 1px var(--line); display: grid; place-items: center; overflow: hidden; }
+.stepText { display: grid; gap: 1px; min-width: 0; }
+.stepText b { font-size: var(--fs-md); font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+.stepText small { font-size: var(--fs-xs); color: var(--muted); }
+.stepNum { font-size: 24px; line-height: 1; color: var(--accent); }
+
+.illoSafari { display: flex; align-items: center; justify-content: space-between; width: 78px; height: 28px; padding: 0 7px; border-radius: 10px; background: var(--surface); box-shadow: var(--shadow-1); color: var(--muted); }
+.illoHot { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); box-shadow: 0 0 0 1.5px var(--accent); }
+.illoSheet { display: grid; gap: 4px; width: 78px; }
+.illoSheetRow { height: 19px; padding: 0 6px; border-radius: 6px; background: var(--surface); display: flex; align-items: center; justify-content: space-between; font-size: 9px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.illoSheetHot { color: var(--ink); box-shadow: 0 0 0 1.5px var(--accent); }
+.illoPlus { width: 12px; height: 12px; border-radius: 3px; border: 1.5px solid currentColor; display: grid; place-items: center; }
+.illoHome { display: grid; grid-template-columns: repeat(3, 16px); gap: 6px; }
+.illoApp { width: 16px; height: 16px; border-radius: 5px; background: var(--line-strong); }
+.illoMine { background: radial-gradient(circle at 34% 30%, var(--orb-1), var(--orb-2) 40%, var(--orb-3) 70%, var(--orb-4)); box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--accent); }
+
+/* ---------- 刪除行程 ---------- */
+.danger { display: grid; gap: 8px; justify-items: stretch; padding-top: 4px; }
+.danger .dangerArmed { background: var(--bad); color: var(--accent-ink); box-shadow: none; }
+.dangerHint { font-size: var(--fs-xs); color: var(--muted); text-align: center; min-height: 1.5em; }
+
+/* ---------- 開關（iOS 51×31） ---------- */
+.switch { position: relative; flex: none; width: 51px; height: 31px; border-radius: var(--r-pill); background: var(--line-strong); transition: background var(--dur-2) var(--ease-out); }
+.switch::before { content: ''; position: absolute; inset: -7px -4px; }
+.switch[aria-checked='true'] { background: var(--accent); }
+.switch:disabled { opacity: 0.45; cursor: default; }
+.knob { position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: var(--accent-ink); box-shadow: 0 3px 8px color-mix(in srgb, var(--night) 22%, transparent), 0 1px 1px color-mix(in srgb, var(--night) 16%, transparent); transition: transform var(--dur-2) var(--ease-spring); }
+.switch[aria-checked='true'] .knob { transform: translateX(20px); }
+
+/* ---------- 表單共用 ---------- */
+.formSec { display: grid; gap: 12px; min-width: 0; }
+.formSec + .formSec { padding-top: 6px; }
+.secTitle { font-size: var(--fs-lg); font-weight: 700; letter-spacing: -0.01em; padding: 0 2px; }
+.input { width: 100%; min-width: 0; border: 0; background: var(--surface); border-radius: 14px; padding: 12px 14px; font-size: 17px; box-shadow: inset 0 0 0 1px var(--line); appearance: none; -webkit-appearance: none; min-height: 48px; }
+.input:focus { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+.fieldError { font-size: var(--fs-sm); color: var(--bad); margin-top: -4px; padding: 0 2px; }
+.fieldHint { font-size: var(--fs-sm); color: var(--ink-2); margin-top: -2px; padding: 0 2px; }
+.hintLine { display: inline-flex; align-items: center; gap: 4px; }
+.hintLine:has(svg) { color: var(--good); font-weight: 600; }
+.busyLabel { display: inline-flex; align-items: center; gap: 8px; }
+
+.switchRow { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 14px; border-radius: 14px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.switchText { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.switchText b { font-size: var(--fs-md); font-weight: 600; }
+.switchText small { font-size: var(--fs-xs); color: var(--muted); }
+
+.rateRow { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.rateMeta { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: var(--fs-sm); color: var(--muted); margin-top: -4px; padding: 0 2px; }
+
+/* 旅伴 */
+.members { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.member { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-height: 44px; padding: 0 16px; border-radius: var(--r-pill); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+.member:has(.memberX) { padding-right: 4px; }
+.memberName { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.memberX { position: relative; flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); }
+.memberX::after { content: ''; position: absolute; inset: -5px; }
+.memberX:active { background: var(--surface-3); }
+.addRow { display: grid; grid-template-columns: 1fr 48px; gap: 8px; align-items: center; }
+.addBtn { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; background: var(--night); color: var(--night-ink); transition: transform var(--dur-1) var(--ease-out), opacity var(--dur-1); }
+.addBtn:active:not([disabled]) { transform: scale(0.94); }
+.addBtn[disabled] { opacity: 0.3; cursor: default; }
+
+/* 底部操作區 */
+.confirmFoot { display: grid; gap: 10px; }
+.confirmText { font-size: var(--fs-md); font-weight: 600; text-align: center; }
+.footBtns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.footError { font-size: var(--fs-sm); color: var(--bad); text-align: center; }
+
+/* ---------- App 設定 ---------- */
+.groupPad { padding: 16px; display: grid; gap: 14px; min-width: 0; }
+/* 卡片裡的輸入框：用凹一階的底色，和卡片區分 */
+.groupPad input, .groupPad select { background-color: var(--surface-2); }
+/* 卡片裡的膠囊選擇器：選中用反白，深色模式也看得出來 */
+.groupPad button[aria-pressed='true'] { background: var(--ink); color: var(--bg); }
+.padHint { font-size: var(--fs-xs); color: var(--muted); margin-top: -4px; }
+.status { font-size: var(--fs-xs); font-weight: 700; padding: 1px 8px; border-radius: var(--r-pill); background: var(--accent-soft); color: var(--accent); }
+.statusOn { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); }
+.aiIntro { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start; padding: 12px 14px; border-radius: var(--r-md); background: var(--accent-soft); }
+.aiIntro p { font-size: var(--fs-sm); color: var(--ink-2); line-height: 1.6; }
+.aiIcon { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink); }
+.keyField { position: relative; }
+.keyInput { padding-right: 78px; letter-spacing: 0.02em; }
+.keyToggle { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); height: 36px; padding: 0 14px; border-radius: var(--r-pill); background: var(--surface-3); font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); }
+.keyToggle::after { content: ''; position: absolute; inset: -4px; }
+.extLink { justify-self: start; display: inline-flex; align-items: center; gap: 4px; min-height: 44px; margin: -12px 0 -6px; color: var(--accent); font-size: var(--fs-sm); font-weight: 600; text-decoration: none; }
+.testRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.testMsg { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sm); color: var(--muted); }
+.testOk { color: var(--good); font-weight: 600; }
+.testFail { font-size: var(--fs-sm); color: var(--bad); line-height: 1.5; margin-top: -4px; }
+.nativeSec { display: grid; gap: 8px; }
+.nativeNote { font-size: var(--fs-xs); color: var(--muted); padding: 0 6px; }
+.inlineSelect {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  min-height: 36px;
+  padding: 6px 30px 6px 14px;
+  border-radius: var(--r-pill);
+  background-color: var(--surface-3);
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 16px, calc(100% - 12px) 16px;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.inlineSelect:disabled { opacity: 0.5; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tripCard:active, .addBtn:active { transform: none; }
+}

@@ -3,10 +3,12 @@ import { useData } from '@/store/data';
 import { hideSplash, isNative, syncStatusBar } from '@/platform';
 import { AppShell } from './AppShell';
 import { registerServiceWorker } from './pwa';
+import { useReminders } from './useReminders';
 
 export function App() {
   const hydrated = useData((s) => s.hydrated);
   const theme = useData((s) => s.settings.theme);
+  useReminders();
 
   // 主題：system 時不設 data-theme，交給 prefers-color-scheme
   useEffect(() => {
