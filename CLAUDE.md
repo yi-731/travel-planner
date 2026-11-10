@@ -16,7 +16,7 @@ iPhone 旅遊 App：行程規劃、導航、天氣、記帳、試算表匯入／
 - `npm run ios:sync` 建置並同步到 iOS 專案
 
 ## 技術
-React 19 + TypeScript（strict）+ Vite 8、zustand（狀態）、IndexedDB（idb-keyval，資料存在手機）、motion（動畫／手勢）、Leaflet + CARTO 圖磚（地圖）、read-excel-file / write-excel-file / papaparse（試算表）、@anthropic-ai/sdk（AI）、Capacitor 8（原生功能）、vite-plugin-pwa（離線＋安裝）。
+React 19 + TypeScript（strict）+ Vite 8、zustand（狀態）、IndexedDB（idb-keyval，資料存在手機）、motion（動畫／手勢）、Leaflet + OpenStreetMap 圖磚（地圖，免金鑰；配色用 CSS 濾鏡，見 features/map/model.ts）、read-excel-file / write-excel-file / papaparse（試算表）、@anthropic-ai/sdk（AI）、Capacitor 8（原生功能）、vite-plugin-pwa（離線＋安裝）。
 
 ## 資料夾
 ```
