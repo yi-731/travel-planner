@@ -88,3 +88,24 @@ export function tripPhase(trip: Pick<Trip, 'startDate' | 'endDate' | 'items'>, n
   const focus = days.includes(now) ? now : first;
   return { phase: 'during', days, focusDay: focus, dayIndex: days.indexOf(focus) };
 }
+
+/** 「第 N 天」的日期列在還不知道出發日時的 key（存在 Trip.days，設定出發日後用 resolveDayKeys 換成日期） */
+export const relDayKey = (n: number) => `__D${n}`;
+export const REL_DAY_KEY = /^__D(\d{1,3})$/;
+
+/**
+ * 把 days 裡「第 N 天」的 key（__D3）依出發日換成日期；沒有出發日就原樣保留。
+ * 換算後和既有的日期重複時，以原本就是日期的為準。
+ */
+export function resolveDayKeys<T>(days: Record<string, T>, start: ISODate | null): Record<string, T> {
+  if (!start) return { ...days };
+  const out: Record<string, T> = {};
+  for (const [k, v] of Object.entries(days)) if (!REL_DAY_KEY.test(k)) out[k] = v;
+  for (const [k, v] of Object.entries(days)) {
+    const m = REL_DAY_KEY.exec(k);
+    if (!m || +m[1] < 1) continue;
+    const date = addDays(start, +m[1] - 1);
+    if (!(date in out)) out[date] = v;
+  }
+  return out;
+}

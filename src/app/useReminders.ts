@@ -7,7 +7,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { fromMinutes, toMinutes } from '@/domain/dates';
-import { daySegments } from '@/domain/schedule';
+import { daySegments, itemMinutes } from '@/domain/schedule';
 import type { Trip } from '@/domain/types';
 import { isNative, onReminderTap, scheduleReminders, type Reminder, type WallClock } from '@/platform';
 import { useActiveTrip, useData } from '@/store/data';
@@ -55,7 +55,8 @@ export function buildReminders(trip: Trip, leadMin: number, now: number = Date.n
 
   const out: Reminder[] = [];
   for (const it of candidates) {
-    const arrive = toMinutes(it.time) as number;
+    // 晚上行程後面的「0:45」是過了午夜（1485 分）：提醒排在隔天凌晨
+    const arrive = itemMinutes(trip, it) ?? (toMinutes(it.time) as number);
     const leaveBy = leaveByOf.get(it.id);
     const departAt = leaveBy != null && leaveBy >= 0 && leaveBy < arrive ? leaveBy : null;
     const wall = wallClockAt(it.date as string, (departAt ?? arrive) - lead);

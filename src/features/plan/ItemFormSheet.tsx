@@ -3,22 +3,42 @@
  * - 表單內容存在元件狀態裡，行程資料在背景更新（例如地圖定位寫回座標）也不會洗掉正在輸入的內容。
  * - 有改動時往下滑或點背景關閉，會先問要不要放棄變更。
  * - 地址欄貼上 Google 地圖分享連結會直接定位（座標來源記為 link），地址文字照原樣保留。
+ * - 「進階」收合區：必做／可省略、導航目的地（手動，會蓋過自動辨識）、分類文字、交通說明。
+ * - 地址、名稱或日期改了：自動辨識的導航目的地依新內容重新產生（有每天城市資料的行程才做）。
  */
 import { useEffect, useId, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { durationWord, ITEM_TYPES } from '@/domain/constants';
 import { tripDays } from '@/domain/dates';
 import type { ISODate, Item, ItemType, LatLng, Trip } from '@/domain/types';
+import { refreshRulePlace } from '@/features/place/rulePlace';
 import { haptic } from '@/platform';
 import { parseMapsLink } from '@/services/geocode';
 import { useActiveTrip, useData } from '@/store/data';
 import { useUI } from '@/store/ui';
 import { Button, Empty, Grid2, Icon, Picker, Select, Sheet, TextArea, TextInput } from '@/ui';
-import { dayOptionLabel, draftFromItem, fmtMDWeek, draftToPatch, emptyDraft, validateDraft, type DraftErrors, type ItemDraft } from './model';
+import {
+  advancedSummary,
+  dayOptionLabel,
+  draftFromItem,
+  fmtMDWeek,
+  draftToPatch,
+  emptyDraft,
+  validateDraft,
+  type DraftErrors,
+  type ItemDraft,
+} from './model';
 import s from './plan.module.css';
 
 const OTHER = '__other';
 const NONE = '__none';
 const DELETE_WINDOW_MS = 4000;
+
+type FlagKey = 'none' | 'must' | 'optional';
+const FLAG_OPTIONS: { key: FlagKey; label: string }[] = [
+  { key: 'none', label: '一般' },
+  { key: 'must', label: '必做' },
+  { key: 'optional', label: '可省略' },
+];
 
 /** parseMapsLink 可能還在實作中，失敗一律當作不是連結 */
 function safeParseLink(text: string): LatLng | null {
@@ -69,7 +89,9 @@ function ItemForm({ trip, original, initialDate }: { trip: Trip; original: Item 
   const [errors, setErrors] = useState<DraftErrors>({});
   const [askDiscard, setAskDiscard] = useState(false);
   const [armedDelete, setArmedDelete] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
   const titleId = useId();
+  const advId = useId();
 
   useEffect(() => {
     if (!armedDelete) return;
@@ -105,7 +127,8 @@ function ItemForm({ trip, original, initialDate }: { trip: Trip; original: Item 
       return;
     }
     const patch = draftToPatch(draft, original, safeParseLink);
-    upsertItem(trip.id, patch);
+    const id = upsertItem(trip.id, patch);
+    if (!patch.place) refreshRulePlace(trip.id, id, original);
     void haptic('success');
     const st = ui.getState();
     if (patch.date) st.selectDate(patch.date);
@@ -146,6 +169,9 @@ function ItemForm({ trip, original, initialDate }: { trip: Trip; original: Item 
   };
 
   const dateValue = otherDate ? OTHER : draft.date || NONE;
+  const advSummary = advancedSummary(draft);
+  // 自動辨識的導航目的地（手動欄位留空時用這個）：當作輸入框的提示
+  const autoQuery = original?.place && original.place.source !== 'manual' && original.place.navigable !== false ? original.place.query : '';
 
   const footer = askDiscard ? (
     <div className={s.discard}>
@@ -317,6 +343,80 @@ function ItemForm({ trip, original, initialDate }: { trip: Trip; original: Item 
         </Grid2>
 
         <TextArea label="備註" placeholder="訂位資訊、要買的東西、注意事項…" value={draft.note} onChange={(e) => set('note', e.target.value)} />
+
+        <div className={s.adv}>
+          <button
+            type="button"
+            className={s.advToggle}
+            aria-expanded={advanced}
+            aria-controls={advId}
+            onClick={() => {
+              void haptic('selection');
+              setAdvanced((v) => !v);
+            }}
+          >
+            <span className={s.advText}>
+              <span className={s.advTitle}>進階</span>
+              <span className={s.advSub}>{advSummary || '必做標記、導航目的地、分類、交通說明'}</span>
+            </span>
+            <span className={`${s.advChev} ${advanced ? s.advOpen : ''}`} aria-hidden>
+              <Icon name="chevronDown" size={16} stroke={2.2} />
+            </span>
+          </button>
+          {advanced && (
+            <div id={advId} className={s.advBody}>
+              <div className={s.fieldGroup} role="group" aria-label="標記">
+                <span className={s.fieldLabel}>標記</span>
+                <Picker<FlagKey>
+                  ariaLabel="標記"
+                  options={FLAG_OPTIONS}
+                  value={draft.flag || 'none'}
+                  onChange={(v) => {
+                    const k = (Array.isArray(v) ? v[0] : v) ?? 'none';
+                    set('flag', k === 'none' ? '' : k);
+                  }}
+                />
+              </div>
+              <TextInput
+                label="導航目的地"
+                placeholder={autoQuery || '例如：清水寺, 京都'}
+                value={draft.placeQuery}
+                autoComplete="off"
+                autoCapitalize="off"
+                enterKeyHint="done"
+                maxLength={200}
+                hint={
+                  draft.placeQuery.trim()
+                    ? '導航和地圖定位會用這段文字，不會再被自動辨識改掉。清空就改回自動辨識。'
+                    : autoQuery
+                      ? '留空＝用自動辨識的目的地（框裡的灰字）。導航到錯的地方時，在這裡寫店名加城市。'
+                      : '留空＝用地址或名稱。寫上店名加城市（例如 清水寺, 京都），導航更不會找錯。'
+                }
+                onChange={(e) => set('placeQuery', e.target.value)}
+              />
+              <Grid2>
+                <TextInput
+                  label="分類文字"
+                  placeholder="例如：早餐、美術館"
+                  value={draft.tag}
+                  autoComplete="off"
+                  enterKeyHint="done"
+                  maxLength={20}
+                  onChange={(e) => set('tag', e.target.value)}
+                />
+                <TextInput
+                  label="交通說明"
+                  placeholder="例如：步行 15 分"
+                  value={draft.transit}
+                  autoComplete="off"
+                  enterKeyHint="done"
+                  maxLength={80}
+                  onChange={(e) => set('transit', e.target.value)}
+                />
+              </Grid2>
+            </div>
+          )}
+        </div>
       </form>
     </Sheet>
   );

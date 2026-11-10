@@ -7,12 +7,18 @@ import {
   cityNameVariants,
   climateYearsBack,
   fetchTripWeather,
+  dayWeatherLocation,
+  findCitiesInText,
   findCityAlias,
   geocodeCity,
+  geocodeTravelCity,
   modeWeatherCode,
   parseForecast,
   shiftYears,
+  validWeatherDays,
   weatherInfo,
+  weatherLocations,
+  weatherLocKey,
   weatherStale,
   type ArchiveDaily,
 } from './weather';
@@ -266,7 +272,7 @@ describe('fetchTripWeather', () => {
     ]);
     expect(c.days[0]).toMatchObject({ code: 3, tMax: 14, tMin: 5, rainProb: 20, sunrise: '06:35' });
     // 2025:61 / 2024:1 / 2023:1 → 1；氣溫 12、13、14 → 13；雨量 6、0、0 → 2
-    expect(c.days[4]).toEqual({ date: '2026-11-25', code: 1, tMax: 13, tMin: 4, rainMm: 2, kind: 'climate' });
+    expect(c.days[4]).toEqual({ date: '2026-11-25', code: 1, tMax: 13, tMin: 4, rainMm: 2, kind: 'climate', place: '京都' });
 
     const fc = calls.find((u) => u.host === 'api.open-meteo.com')!;
     expect(fc.searchParams.get('start_date')).toBe('2026-11-21');
@@ -295,7 +301,7 @@ describe('fetchTripWeather', () => {
     const prev: WeatherCache = { fetchedAt: Date.now() - 5 * HOUR, lat: KYOTO.lat, lng: KYOTO.lng, days: [day('2026-11-25', 'climate')] };
     const c = await fetchTripWeather(trip({ weather: prev }));
     expect(c.days).toHaveLength(5);
-    expect(c.days[4]).toEqual(day('2026-11-25', 'climate'));
+    expect(c.days[4]).toEqual({ ...day('2026-11-25', 'climate'), place: '京都' });
     expect(calls.some((u) => u.host === 'archive-api.open-meteo.com')).toBe(false);
   });
 
@@ -402,5 +408,153 @@ describe('城市定位', () => {
   it('連線失敗丟出中文錯誤（不要誤報成找不到）', async () => {
     mockFetch(() => undefined);
     await expect(geocodeCity('京都')).rejects.toThrow('無法連線到城市定位服務');
+  });
+});
+
+/* ---------------- 多城市行程 ---------------- */
+
+const PDX = { lat: 45.5152, lng: -122.6784, en: 'Portland', admin1: 'Oregon', countryCode: 'US', label: '波特蘭，美國' };
+const SEA = { lat: 47.6062, lng: -122.3321, label: '西雅圖，美國', countryCode: 'US' };
+
+/** 西雅圖出發 → 波特蘭兩晚 → 回西雅圖（日期在預報範圍內） */
+function multiTrip(over: Partial<Trip> = {}): Trip {
+  const d = (n: number) => addDays(TODAY, n);
+  return trip({
+    city: '西雅圖',
+    cityGeo: SEA,
+    startDate: d(2),
+    endDate: d(5),
+    days: {
+      [d(2)]: { city: '西雅圖', label: '台北 → 西雅圖' },
+      [d(3)]: { city: '波特蘭', geo: PDX, lodging: 'Maple Lodge' },
+      // 沒寫城市：沿用前一天
+      [d(4)]: { label: '酒莊一日遊' },
+      [d(5)]: { city: '西雅圖' },
+    },
+    ...over,
+  });
+}
+
+describe('每天的天氣地點', () => {
+  it('依當天城市；沒寫城市沿用前一天；同城市沒有座標時用行程城市的座標', () => {
+    const t = multiTrip();
+    expect(dayWeatherLocation(t, addDays(TODAY, 2))).toEqual({ lat: 47.6062, lng: -122.3321, place: '西雅圖' });
+    expect(dayWeatherLocation(t, addDays(TODAY, 3))).toEqual({ lat: 45.5152, lng: -122.6784, place: '波特蘭' });
+    expect(dayWeatherLocation(t, addDays(TODAY, 4))).toEqual({ lat: 45.5152, lng: -122.6784, place: '波特蘭' });
+    expect(weatherLocKey(weatherLocations(t))).toBe(
+      `${addDays(TODAY, 2)}:47.61,-122.33|${addDays(TODAY, 3)}:45.52,-122.68|${addDays(TODAY, 4)}:45.52,-122.68|${addDays(TODAY, 5)}:47.61,-122.33`,
+    );
+  });
+  it('單一城市行程（沒有 days）：全部用行程城市，地點名稱是別名表的中文名', () => {
+    expect(dayWeatherLocation(trip(), addDays(TODAY, 12))).toEqual({ lat: KYOTO.lat, lng: KYOTO.lng, place: '京都' });
+  });
+});
+
+describe('fetchTripWeather（多城市）', () => {
+  it('一次請求帶多個座標，每天用自己城市的天氣，並記下 place 與 locKey', async () => {
+    const calls = mockFetch((u) => {
+      if (u.host !== 'api.open-meteo.com') return undefined;
+      const lats = u.searchParams.get('latitude')!.split(',');
+      // 多個座標時回傳陣列；波特蘭比較冷
+      return { body: lats.map((lat) => {
+        const b = forecastBody(u);
+        if (lat.startsWith('45')) b.daily.temperature_2m_max = b.daily.temperature_2m_max.map(() => 8);
+        return b;
+      }) };
+    });
+    const t = multiTrip();
+    const c = await fetchTripWeather(t);
+    const fc = calls.filter((u) => u.host === 'api.open-meteo.com');
+    expect(fc).toHaveLength(1);
+    expect(fc[0].searchParams.get('latitude')).toBe('47.6062,45.5152');
+    expect(fc[0].searchParams.get('longitude')).toBe('-122.3321,-122.6784');
+    expect(c.days.map((d) => [d.place, d.tMax])).toEqual([['西雅圖', 14], ['波特蘭', 8], ['波特蘭', 8], ['西雅圖', 14]]);
+    expect(c.locKey).toBe(weatherLocKey(weatherLocations(t)));
+    expect(c.lat).toBe(SEA.lat);
+    expect(weatherStale(c, t)).toBe(false);
+  });
+
+  it('某天換了城市：locKey 不同 → 過期；只有那天的舊天氣不顯示', async () => {
+    mockFetch((u) => (u.host === 'api.open-meteo.com' ? { body: u.searchParams.get('latitude')!.includes(',') ? [forecastBody(u), forecastBody(u)] : forecastBody(u) } : undefined));
+    const t = multiTrip();
+    const c = await fetchTripWeather(t);
+    const moved = multiTrip();
+    moved.days![addDays(TODAY, 5)] = { city: '波特蘭', geo: PDX };
+    expect(weatherStale(c, moved)).toBe(true);
+    expect(validWeatherDays(c, moved).map((d) => d.date)).toEqual([2, 3, 4].map((n) => addDays(TODAY, n)));
+    expect(validWeatherDays(c, t)).toHaveLength(4);
+  });
+
+  it('舊版快取（沒有 locKey）：單一城市行程照常有效', () => {
+    const legacy: WeatherCache = { fetchedAt: Date.now(), lat: KYOTO.lat, lng: KYOTO.lng, days: [12, 13, 14, 15, 16].map((n) => day(addDays(TODAY, n), n <= 15 ? 'forecast' : 'climate')) };
+    expect(weatherStale(legacy, trip())).toBe(false);
+    expect(validWeatherDays(legacy, trip())).toHaveLength(5);
+    // 多城市行程用舊快取：城市不同的日子視為過期
+    const pdxDay = trip({ days: { [addDays(TODAY, 14)]: { city: '波特蘭', geo: PDX } } });
+    expect(weatherStale(legacy, pdxDay)).toBe(true);
+  });
+
+  it('沒有行程城市、但有日期城市：用第一個有座標的日子當主要座標', async () => {
+    mockFetch((u) => (u.host === 'api.open-meteo.com' ? { body: forecastBody(u) } : undefined));
+    const t = trip({ city: '', cityGeo: undefined, startDate: addDays(TODAY, 3), endDate: addDays(TODAY, 4), days: { [addDays(TODAY, 3)]: { city: '波特蘭', geo: PDX } } });
+    const c = await fetchTripWeather(t);
+    expect(c.lat).toBe(PDX.lat);
+    expect(c.days.every((d) => d.place === '波特蘭')).toBe(true);
+  });
+});
+
+describe('城市別名與文字中的城市', () => {
+  it('別名表：英文簡稱、州', () => {
+    expect(findCityAlias('SF')?.display).toBe('舊金山');
+    expect(findCityAlias('firenze')?.display).toBe('佛羅倫斯');
+    expect(findCityAlias('NYC')?.en).toBe('New York');
+    expect(findCityAlias('波特蘭')).toEqual({ display: '波特蘭', en: 'Portland', cc: 'US', admin1: 'Oregon' });
+    expect(findCityAlias('San Jose')?.display).toBe('聖荷西');
+    // 舊格式（沒有州）照常
+    expect(findCityAlias('京都')).toEqual({ display: '京都', en: 'Kyoto', cc: 'JP', admin1: undefined });
+  });
+  it('findCitiesInText：飯店名稱裡的城市、較長的寫法優先', () => {
+    const names = (s: string) => findCitiesInText(s).map((m) => m.alias.display);
+    expect(names('住 Harbor Inn Portland')).toEqual(['波特蘭']);
+    expect(names('New York Bagels Seattle')).toEqual(['紐約', '西雅圖']);
+    expect(names('Venice Beach 散步')).toEqual(['威尼斯']);
+    expect(names('東京都庁')).toEqual(['東京']);
+    expect(names('Kobe｜當地時間')).toEqual(['神戶']);
+    expect(names('New Taipei 夜市')).toEqual(['新北']);
+  });
+  it('findCitiesInText：路名、菜名、短英文的大小寫不算', () => {
+    const names = (s: string) => findCitiesInText(s).map((m) => m.alias.display);
+    expect(names('1234 Portland Ave')).toEqual([]);
+    expect(names('北京烤鴨')).toEqual([]);
+    expect(names('晚餐 大阪燒')).toEqual([]);
+    expect(names('LAOX 免稅店')).toEqual([]);
+    expect(names('La Boqueria 市場')).toEqual([]);
+    expect(names('kobe beef 3')).toEqual([]);
+    expect(names('日光浴')).toEqual([]);
+  });
+});
+
+describe('geocodeTravelCity', () => {
+  it('同名城市選別名表指定的州（Portland, ME 人口「比較多」（假資料）也選 OR），回傳英文名與州', async () => {
+    const calls = mockFetch((u) =>
+      u.searchParams.get('name') === 'Portland'
+        ? {
+            body: {
+              results: [
+                { name: 'Portland', admin1: 'Maine', latitude: 43.6591, longitude: -70.2568, feature_code: 'PPLA2', population: 900000, country_code: 'US' },
+                { name: 'Portland', admin1: 'Oregon', latitude: 45.5152, longitude: -122.6784, feature_code: 'PPLA2', population: 652503, country_code: 'US', timezone: 'America/Los_Angeles' },
+              ],
+            },
+          }
+        : { body: {} },
+    );
+    const g = await geocodeTravelCity('波特蘭');
+    expect(g).toEqual({ lat: 45.5152, lng: -122.6784, label: '波特蘭，美國', en: 'Portland', admin1: 'Oregon', timezone: 'America/Los_Angeles', countryCode: 'US' });
+    expect(calls[0].searchParams.get('language')).toBe('en');
+    expect(calls[0].searchParams.get('countryCode')).toBe('US');
+  });
+  it('不在別名表的城市：照原文查，英文結果名當 en', async () => {
+    mockFetch(() => ({ body: { results: [{ name: 'Hood River', admin1: 'Oregon', latitude: 45.7054, longitude: -121.5215, feature_code: 'PPLA2', population: 8300, country_code: 'US' }] } }));
+    expect(await geocodeTravelCity('Hood River')).toMatchObject({ en: 'Hood River', admin1: 'Oregon', label: 'Hood River，美國' });
   });
 });

@@ -110,6 +110,49 @@ describe('applyForm', () => {
     expect(t.items.map((i) => i.date)).toEqual(['2026-11-28', '2026-11-29']);
     expect(Object.keys(t.ai.dayChecks)).toEqual(['2026-11-28']);
   });
+  it('shifts the per-day cities (days) with the items, keeping their geo', () => {
+    const geo = { lat: 45.52, lng: -122.68, en: 'Portland' };
+    const t = trip({
+      city: 'SEATTLE',
+      startDate: '2026-12-03',
+      endDate: '2026-12-05',
+      days: {
+        '2026-12-03': { label: '西雅圖', city: '西雅圖', source: 'rule' },
+        '2026-12-04': { label: '西雅圖 → 波特蘭｜住 Maple Lodge', city: '波特蘭', lodging: 'Maple Lodge', geo, source: 'rule' },
+        '2026-12-05': { label: '波特蘭', city: '波特蘭', lodging: 'Maple Lodge', geo, source: 'rule' },
+      },
+      items: [item({ id: 'a', date: '2026-12-04', title: '晚餐 Blue Fin', address: '1000 SE Portland Ave' })],
+    });
+    applyForm(t, { ...initialForm(t), startDate: '2027-12-03', endDate: '2027-12-05' });
+    expect(t.items[0].date).toBe('2027-12-04');
+    expect(Object.keys(t.days!).sort()).toEqual(['2027-12-03', '2027-12-04', '2027-12-05']);
+    expect(t.days!['2027-12-04']).toMatchObject({ city: '波特蘭', lodging: 'Maple Lodge', geo });
+    // 導航目的地依移動後的那天重新辨識
+    expect(t.items[0].place?.query).toBe('Blue Fin, 1000 SE Portland Ave, Portland, OR, USA');
+  });
+  it('converts 第 N 天 day banners (__D3) once a start date is set', () => {
+    const t = trip({
+      days: { __D1: { label: '大阪 → 京都｜住 Hotel Kyoto', city: '京都', lodging: 'Hotel Kyoto', source: 'rule' }, __D2: { label: '奈良一日遊', city: '奈良', source: 'rule' } },
+      items: [item({ dayOffset: 1, title: '清水寺', address: '清水寺' })],
+    });
+    applyForm(t, { ...initialForm(t), startDate: '2026-12-01' });
+    expect(Object.keys(t.days!).sort()).toEqual(['2026-12-01', '2026-12-02']);
+    expect(t.days!['2026-12-02']).toMatchObject({ city: '奈良', lodging: 'Hotel Kyoto' });
+    expect(t.items[0]).toMatchObject({ date: '2026-12-01', place: { query: '清水寺, Kyoto, Japan' } });
+  });
+  it('a new trip city reaches the days without banners (stale auto-filled days are dropped)', () => {
+    const t = trip({
+      city: '大阪',
+      startDate: '2026-12-01',
+      endDate: '2026-12-02',
+      // 舊版會把沒有日期列的日子存成行程城市
+      days: { '2026-12-01': { city: '大阪', source: 'rule' }, '2026-12-02': { city: '大阪', source: 'rule' } },
+      items: [item({ date: '2026-12-02', title: '清水寺', address: '清水寺' })],
+    });
+    applyForm(t, { ...initialForm(t), city: '京都' }, { cityGeo: { lat: 35.01, lng: 135.77, label: '京都，日本', countryCode: 'JP' } });
+    expect(t.days).toEqual({});
+    expect(t.items[0].place?.query).toBe('清水寺, Kyoto, Japan');
+  });
   it('keeps item dates when shiftItems is off', () => {
     const t = trip({ startDate: '2026-11-21', items: [item({ date: '2026-11-21' })] });
     applyForm(t, { ...initialForm(t), startDate: '2026-12-01', shiftItems: false });

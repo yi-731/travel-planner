@@ -7,7 +7,7 @@ import type { Expense, Item, Settings, Trip } from '@/domain/types';
 import { backupUnreadable, idbStorage, requestPersistentStorage, setWriteGate } from './persist';
 import { migrate, SCHEMA_VERSION } from './migrations';
 import { buildSampleTrip } from './sample';
-import { healTrips } from '@/features/more/backup';
+import { healSettings, healTrips } from '@/features/more/backup';
 
 /**
  * 持久化資料（存在手機的 IndexedDB）：所有行程、目前行程、設定。
@@ -57,6 +57,8 @@ export const defaultSettings: Settings = {
   reminders: false,
   reminderLeadMin: 15,
   defaultHomeCurrency: 'TWD',
+  aiTripBudgetTwd: 200,
+  aiAutoResolvePlaces: true,
 };
 
 export function newTrip(init: Partial<Trip> & Pick<Trip, 'name'>, settings: Settings = defaultSettings): Trip {
@@ -184,7 +186,7 @@ export const useData = create<DataState>()(
       partialize: (s) => ({ trips: s.trips, activeTripId: s.activeTripId, settings: s.settings }),
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<DataState>;
-        return { ...current, ...p, trips: healTrips(p.trips ?? current.trips), settings: { ...defaultSettings, ...(p.settings ?? {}) } };
+        return { ...current, ...p, trips: healTrips(p.trips ?? current.trips), settings: healSettings(p.settings, defaultSettings) };
       },
       onRehydrateStorage: () => (state, error) => {
         if (error || !state) {

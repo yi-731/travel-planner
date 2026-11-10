@@ -1,19 +1,38 @@
 /**
- * 匯入預覽：數量、注意事項、前 6 個行程點，以及「建立為新行程／更新／附加」三種套用方式。
- * 套用的實際動作由 ImportSheet 執行（onCreate / onMerge）。
+ * 匯入預覽：數量、注意事項、每天的城市與住宿（App 看懂了哪些地點）、前 6 個行程點與導航目的地，
+ * 以及「建立為新行程／更新／附加」三種套用方式。套用的實際動作由 ImportSheet 執行（onCreate / onMerge）。
  */
 import { motion, useReducedMotion } from 'motion/react';
-import { forwardRef, useMemo, useState } from 'react';
+import { Fragment, forwardRef, useDeferredValue, useMemo, useState } from 'react';
 import { itemType } from '@/domain/constants';
 import { fmtMD } from '@/domain/dates';
 import type { Trip } from '@/domain/types';
 import { haptic } from '@/platform';
+import { aiReady } from '@/services/ai';
 import { applyImport, type ImportResult } from '@/services/importer';
+import { useData } from '@/store';
 import { Button, Chip, Grid2, Note, TextInput } from '@/ui';
-import { currencyHint, hasWrittenCurrency, previewDate, removedCount, shortName, unwrittenCount, type NewTripDraft } from './model';
+import {
+  currencyHint,
+  dayRows,
+  dayRowText,
+  flagCounts,
+  hasWrittenCurrency,
+  previewDate,
+  placesCostHint,
+  previewPlaces,
+  previewTrip,
+  removedCount,
+  shortName,
+  suggestedCity,
+  unwrittenCount,
+  type NewTripDraft,
+} from './model';
 import s from './importer.module.css';
 
 const ROWS = 6;
+/** 每天的城市先顯示幾天（其餘按「顯示全部」） */
+const DAY_ROWS = 4;
 
 export interface CreateOptions {
   name: string;
@@ -44,10 +63,26 @@ export const ImportPreview = forwardRef<HTMLElement, Props>(function ImportPrevi
   const [city, setCity] = useState('');
   const [start, setStart] = useState('');
   const [confirmReplace, setConfirmReplace] = useState(false);
+  const [allDays, setAllDays] = useState(false);
+  const autoPlaces = useData((st) => st.settings.aiAutoResolvePlaces);
+  const aiModel = useData((st) => st.settings.aiModel);
 
   const nItems = result.items.length;
   const nExp = result.expenses.length;
   const empty = !nItems && !nExp;
+
+  // App 看懂了什麼：每天的城市與住宿、必做／可省略、每一站的導航目的地
+  const days = useMemo(() => dayRows(result), [result]);
+  const flags = useMemo(() => flagCounts(result), [result]);
+  const suggested = useMemo(() => suggestedCity(result), [result]);
+  const cityFor = city.trim() || suggested;
+  const deferredCity = useDeferredValue(cityFor);
+  const places = useMemo(() => (nItems ? previewPlaces(result, deferredCity, ROWS) : []), [result, deferredCity, nItems]);
+  const hasPlaces = places.some(Boolean);
+  const shownDays = allDays ? days : days.slice(0, DAY_ROWS);
+  const willResolve = autoPlaces && nItems > 0 && aiReady();
+  // AI 辨識的大約費用：依這份試算表的行程點數與設定的模型
+  const costHint = useMemo(() => (willResolve ? placesCostHint(previewTrip(result, trip), aiModel) : ''), [willResolve, result, trip, aiModel]);
 
   // 以試算表為準更新時，會被移除的行程點數（先算好，才能事先提醒）
   const removed = useMemo(() => {
@@ -95,6 +130,12 @@ export const ImportPreview = forwardRef<HTMLElement, Props>(function ImportPrevi
                 <span className={s.countLabel}>個行程點</span>
               </span>
             )}
+            {days.length > 0 && (
+              <span className={s.count}>
+                <span className={`serif num ${s.countNum}`}>{days.length}</span>
+                <span className={s.countLabel}>天</span>
+              </span>
+            )}
             {nExp > 0 && (
               <span className={s.count}>
                 <span className={`serif num ${s.countNum}`}>{nExp}</span>
@@ -102,6 +143,20 @@ export const ImportPreview = forwardRef<HTMLElement, Props>(function ImportPrevi
               </span>
             )}
           </div>
+        )}
+        {(flags.must > 0 || flags.optional > 0) && (
+          <p className={s.flags}>
+            {flags.must > 0 && (
+              <span>
+                ★ 必做 <span className="num">{flags.must}</span>
+              </span>
+            )}
+            {flags.optional > 0 && (
+              <span>
+                ◇ 可省略 <span className="num">{flags.optional}</span>
+              </span>
+            )}
+          </p>
         )}
       </div>
 
@@ -114,6 +169,28 @@ export const ImportPreview = forwardRef<HTMLElement, Props>(function ImportPrevi
             ))}
           </ul>
         </Note>
+      )}
+
+      {days.length > 0 && (
+        <div className={s.days}>
+          <div className={s.daysHead}>
+            <span className={s.blockTitle}>每天的城市與住宿</span>
+            <span className={s.daysHint}>天氣與導航會依當天的城市</span>
+          </div>
+          <ul className={s.dayList}>
+            {shownDays.map((d) => (
+              <li key={d.key} className={s.dayRow}>
+                <span className={`num ${s.dayDate}`}>{d.date}</span>
+                <span className={`${s.dayText} ${d.route ? '' : s.dayUnknown}`}>{dayRowText(d)}</span>
+              </li>
+            ))}
+          </ul>
+          {days.length > DAY_ROWS && (
+            <Button variant="plain" size="sm" className={s.daysMore} aria-expanded={allDays} onClick={() => setAllDays((v) => !v)}>
+              {allDays ? '收起' : `顯示全部 ${days.length} 天`}
+            </Button>
+          )}
+        </div>
       )}
 
       {nItems > 0 && (
@@ -131,14 +208,32 @@ export const ImportPreview = forwardRef<HTMLElement, Props>(function ImportPrevi
               {result.items.slice(0, ROWS).map((it, i) => {
                 const t = itemType(it.type);
                 return (
-                  <tr key={i}>
-                    <td className="num">{previewDate(it)}</td>
-                    <td className={`num ${it.time ? '' : s.dim}`}>{it.time ?? '—'}</td>
-                    <td className={s.tdTitle}>{it.title}</td>
-                    <td>
-                      <Chip color={t.color}>{t.label}</Chip>
-                    </td>
-                  </tr>
+                  <Fragment key={i}>
+                    <tr className={hasPlaces ? s.hasSub : undefined}>
+                      <td className="num">{previewDate(it)}</td>
+                      <td className={`num ${it.time ? '' : s.dim}`}>{it.time ?? '—'}</td>
+                      <td className={s.tdTitle}>
+                        {it.flag && (
+                          <span className={s.flagMark} aria-label={it.flag === 'must' ? '必做' : '可省略'}>
+                            {it.flag === 'must' ? '★' : '◇'}
+                          </span>
+                        )}
+                        {it.title}
+                      </td>
+                      <td>
+                        <Chip color={t.color}>{it.tag ?? t.label}</Chip>
+                      </td>
+                    </tr>
+                    {/* 導航目的地：整列寬顯示（不用左右滑就看得到 App 認出的地點與城市） */}
+                    {hasPlaces && (
+                      <tr className={s.subRow}>
+                        <td colSpan={4}>
+                          <span className={s.navLabel}>導航目的地</span>
+                          <span className={places[i] ? undefined : s.dim}>{places[i] || '—'}</span>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -179,11 +274,15 @@ export const ImportPreview = forwardRef<HTMLElement, Props>(function ImportPrevi
           <div className={s.blockTitle}>建立為新行程</div>
           <Grid2>
             <TextInput label="行程名稱" value={name} placeholder={result.suggestedName} onChange={(e) => setName(e.target.value)} />
-            <TextInput label="城市（選填）" value={city} placeholder="KYOTO" autoCapitalize="characters" autoComplete="off" onChange={(e) => setCity(e.target.value)} />
+            <TextInput label="城市（選填）" value={city} placeholder={suggested || 'KYOTO'} autoCapitalize="characters" autoComplete="off" onChange={(e) => setCity(e.target.value)} />
           </Grid2>
           <p className={s.blockHint} aria-live="polite">
-            {currencyHint(newTrip, city)}
+            {!city.trim() && suggested ? `沒填城市會用 ${suggested}（依每天的城市）。` : ''}
+            {currencyHint(newTrip, cityFor)}
           </p>
+          {willResolve && (
+            <p className={s.blockHint}>建立後會用 AI 辨識每一站的導航地點（{costHint}），可在 App 設定關閉。</p>
+          )}
           {result.hasRelativeDays && (
             <TextInput
               label="出發日"
@@ -193,7 +292,7 @@ export const ImportPreview = forwardRef<HTMLElement, Props>(function ImportPrevi
               onChange={(e) => setStart(e.target.value)}
             />
           )}
-          <Button variant="go" block disabled={busy} onClick={() => onCreate({ name: name.trim() || result.suggestedName, city: city.trim(), startDate: start || null })}>
+          <Button variant="go" block disabled={busy} onClick={() => onCreate({ name: name.trim() || result.suggestedName, city: cityFor, startDate: start || null })}>
             建立為新行程
           </Button>
         </div>

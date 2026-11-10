@@ -5,13 +5,24 @@
  * 流程：readSpreadsheetFile / readPastedText / fetchGoogleSheet（sheets.ts）→ RawSheets
  *       → interpretSheets → ImportResult（預覽）→ applyImport → Trip（由呼叫端寫入 store）
  *
- * 要支援新的欄位名稱：改 FIELD_ALIASES；新的類型關鍵字：改 ITEM_TYPE_WORDS / EXPENSE_WORDS。
+ * 要支援新的欄位名稱：改 FIELD_ALIASES；新的類型關鍵字：改 CATEGORY_WORDS / ITEM_TYPE_WORDS / EXPENSE_WORDS。
+ *
+ * 真實的手排行程表（見 importer.test.ts「真實格式」）常見：
+ *  - 標題列第一格是一大段圖例，最後才接「日期 3/8（一）｜台北 → 西雅圖｜住 …」（第一天的日期列寫在標題裡）
+ *  - 日期列：A 欄「3/9（二）｜西雅圖 → 波特蘭｜住 Harbor Inn」、其他格空白 → ImportResult.days
+ *  - 行程列的日期欄空白（沿用上一個日期），偶爾寫一句旁註（「登機門可能更動」）→ 備註「提醒：…」
+ *  - 名稱有 ★ 必做／◇ 可省略標記、「地點 / 交通」欄混著地址、地點名稱、路線（A → B）與交通說明（步行 10 分）
+ *  - 預估花費寫「$18–24」「$49.99+稅」「已訂」「含在團費」
+ * 日期列與地點欄的解讀在 services/places.ts（parseDayBanner、classifyLocation、cleanTitle），
+ * 套用後由 applyRulePlaces 幫每一站組出含城市背景的導航目的地。
  */
 import Papa from 'papaparse';
-import { EXPENSE_CATEGORIES, ITEM_TYPES } from '@/domain/constants';
-import { addDays, diffDays, fmtMD, fromMinutes, today, toMinutes } from '@/domain/dates';
+import { EXPENSE_CATEGORIES, ITEM_TYPES, itemType } from '@/domain/constants';
+import { addDays, diffDays, fmtMD, fromMinutes, REL_DAY_KEY, relDayKey, resolveDayKeys, today, toMinutes } from '@/domain/dates';
 import { uid } from '@/domain/ids';
-import type { Expense, ExpenseCategory, ISODate, Item, ItemType, Trip } from '@/domain/types';
+import type { DayMeta, Expense, ExpenseCategory, ISODate, Item, ItemType, Trip } from '@/domain/types';
+import { applyRulePlaces, classifyLocation, cleanTitle, parseDayBanner, type LocationCell } from './places';
+import { findCityAlias } from './weather';
 
 /** 工作表名稱 → 二維陣列（第一列通常是標題） */
 export type RawSheets = Record<string, unknown[][]>;
@@ -26,8 +37,28 @@ export type DraftExpense = Omit<Expense, 'id' | 'createdAt' | 'updatedAt' | 'dat
   dayOffset?: number;
 };
 
+/** 匯入的行程點（id 與時間戳由 applyImport 補上） */
+export type DraftItem = Omit<Item, 'id' | 'createdAt' | 'updatedAt'> & {
+  /**
+   * 預估花費寫明的幣別（只在和辨識時的當地貨幣不同時才有，例如當地貨幣 JPY、試算表寫「$25」）。
+   * 只在匯入過程中使用：套用時若和行程的當地貨幣不同，金額改寫在備註，不會存進 Item。
+   */
+  costCurrency?: string;
+};
+
+/** 試算表的一個日期列（「3/9（二）｜西雅圖 → 波特蘭｜住 Harbor Inn」） */
+export interface ImportDay {
+  /** 去掉日期與星期後的原文 */
+  label: string;
+  /** 依序出現的城市（顯示名，例如 ['西雅圖','波特蘭']） */
+  cities?: string[];
+  /** 當天過夜的城市 */
+  city?: string;
+  lodging?: string;
+}
+
 export interface ImportResult {
-  items: Omit<Item, 'id' | 'createdAt' | 'updatedAt'>[];
+  items: DraftItem[];
   expenses: DraftExpense[];
   warnings: string[];
   /** 偵測到「第 N 天」格式（需要出發日才能換算） */
@@ -39,11 +70,17 @@ export interface ImportResult {
    * 試算表沒有的欄位會保留 App 裡填的值。沒有這項（例如手動組出的結果）時，只在試算表的值是空的時候保留。
    */
   columns?: { items: ImportColumn[]; expenses: ImportColumn[] };
+  /**
+   * 試算表的日期列 → 每天的城市與住宿。key 是日期；「第 N 天」又還不知道出發日時是 relDayKey(N)（「__D3」），
+   * 由 applyImport 依出發日換算（見 resolveDayKeys）。
+   */
+  days?: Record<string, ImportDay>;
 }
 
 export type ImportMode = 'new' | 'append' | 'replace';
 
-type DraftItem = ImportResult['items'][number];
+// 「第 N 天」的日期列 key（__D3）與換算：定義在 domain/dates.ts（行程設定也要用，不必載入整個匯入程式）
+export { relDayKey, resolveDayKeys };
 
 // ───────────────────────────── 讀檔 ─────────────────────────────
 
@@ -195,8 +232,9 @@ function matchAliases(headers: string[], map: HeaderMap, taken: Set<number>, tab
       }
     }
   });
-  // 2) 包含
-  headers.forEach((h, col) => {
+  // 2) 包含：短的標題先選（「行程內容」先拿走名稱欄，一大段圖例裡碰巧有「項目」「時間」不會搶走欄位）
+  const byLength = headers.map((h, col) => ({ h, col })).sort((a, b) => a.h.length - b.h.length);
+  byLength.forEach(({ h, col }) => {
     if (!h || taken.has(col)) return;
     let best: { field: Field; end: number; len: number } | null = null;
     for (const [field, aliases] of table) {
@@ -215,11 +253,49 @@ function matchAliases(headers: string[], map: HeaderMap, taken: Set<number>, tab
   });
 }
 
-/** 一列標題 → 欄位對應（欄位 → 欄號） */
-function mapHeaderRow(row: unknown[]): HeaderMap {
+/** 日期的寫法（找標題格裡嵌的日期用） */
+const DATE_TOKEN_RE = /\d{4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}|\d{1,2}\s*[/.月]\s*\d{1,2}|第\s*[0-9零一二兩三四五六七八九十]+\s*[天日]|day\s*\d{1,2}/gi;
+const DATE_WORD_BEFORE_RE = /(?:日期|日程|date|day)\s*[:：]?$/i;
+
+/**
+ * 標題格裡嵌著第一天的日期列：「★ = 必做 …… 日期 3/8（一）｜台北 → 西雅圖｜住 Hotel Zephyr」。
+ * 日期前面要是「日期」「Date」等字（或整格就從日期開始、後面還有文字），回傳從日期開始的那一段；沒有則 null。
+ */
+function headerSeed(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const orig = cellText(v);
+  const s = toHalfWidth(orig);
+  for (const m of s.matchAll(DATE_TOKEN_RE)) {
+    const before = s.slice(0, m.index).trim();
+    const seed = orig.slice(m.index);
+    if (before && !DATE_WORD_BEFORE_RE.test(before)) continue;
+    const dp = parseDateCell(seed, { startDate: null, anchor: null });
+    if (!dp) continue;
+    // 整格就是日期開頭（沒有「日期」兩個字）：後面要有日期列的文字，才不會把資料列誤認成標題
+    if (!before && !bannerText(dp.rest)) continue;
+    return seed;
+  }
+  return null;
+}
+
+/** 一列標題 → 欄位對應（欄位 → 欄號）與標題格裡嵌的第一天日期列 */
+function mapHeaderRow(row: unknown[]): { map: HeaderMap; seed?: string } {
   const map: HeaderMap = {};
   const headers = row.map(normHeader);
   const taken = new Set<number>();
+  let seed: string | undefined;
+  // 圖例＋「日期 3/8（一）｜…」的那一格就是日期欄（除非另外有一格明寫「日期」）
+  const dateAliases = FIELD_ALIASES.find(([f]) => f === 'date')![1];
+  if (!headers.some((h) => dateAliases.includes(h))) {
+    for (let col = 0; col < row.length; col++) {
+      const sd = headerSeed(row[col]);
+      if (sd == null) continue;
+      map.date = col;
+      taken.add(col);
+      seed = sd;
+      break;
+    }
+  }
   matchAliases(headers, map, taken, FIELD_ALIASES);
   // 沒有名稱欄、只有「地點」欄（「日期｜時間｜地點｜備註」很常見）：地點就是行程名稱，
   // 再從剩下的欄位找地址（「日期｜地點｜地址」→ 地點是名稱、地址是地址）
@@ -228,7 +304,7 @@ function mapHeaderRow(row: unknown[]): HeaderMap {
     delete map.address;
     matchAliases(headers, map, taken, FIELD_ALIASES.filter(([f]) => f === 'address'));
   }
-  return map;
+  return { map, seed };
 }
 
 interface HeaderRow {
@@ -236,15 +312,21 @@ interface HeaderRow {
   map: HeaderMap;
   /** 標題列的原始文字（給提醒訊息用） */
   labels: string[];
+  /** 標題格裡嵌的第一天日期列（「3/8（一）｜台北 → 西雅圖｜住 Hotel Zephyr」） */
+  seed?: string;
 }
 
 function findHeader(rows: unknown[][]): HeaderRow | null {
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
     const row = rows[i];
     if (!Array.isArray(row)) continue;
-    const map = mapHeaderRow(row);
+    const { map, seed } = mapHeaderRow(row);
     const n = Object.keys(map).length;
-    if (n >= 2 && (map.title !== undefined || map.cost !== undefined)) return { index: i, map, labels: row.map(cellText) };
+    if (n >= 2 && (map.title !== undefined || map.cost !== undefined)) {
+      // 嵌日期的那一格不當欄位名稱顯示（提醒訊息裡只寫「日期」）
+      const labels = row.map((c, k) => (seed && k === map.date ? '日期' : cellText(c)));
+      return { index: i, map, labels, seed };
+    }
   }
   return null;
 }
@@ -339,9 +421,10 @@ interface DateCtx {
   anchor: ISODate | null;
 }
 
+/** rest：文字儲存格在日期後面剩下的文字（日期列的「｜西雅圖 → 波特蘭｜住 …」） */
 type DateParse =
-  | { kind: 'abs'; date: ISODate; minutes: number | null }
-  | { kind: 'rel'; day: number; minutes: number | null };
+  | { kind: 'abs'; date: ISODate; minutes: number | null; rest?: string }
+  | { kind: 'rel'; day: number; minutes: number | null; rest?: string };
 
 /** 沒寫年份的 M/D：取最接近參考日（上一列日期或出發日）的年份，可處理跨年；都沒有時用今年（已過 4 個月以上視為明年） */
 function monthDay(m: number, d: number, ctx: DateCtx): ISODate | null {
@@ -381,42 +464,71 @@ function parseDateCell(v: unknown, ctx: DateCtx): DateParse | null {
     }
     return null;
   }
-  const s = toHalfWidth(cellText(v));
+  const orig = cellText(v);
+  // toHalfWidth 一個字換一個字，位置對得上：日期後面的文字從原文取（保留「｜」「（」等全形符號）
+  const s = toHalfWidth(orig);
   if (!s) return null;
   const timeAfter = (rest: string) => {
     const t = /(?:^|[T\s])([0-2]?\d:[0-5]\d)/.exec(rest);
     return t ? parseTimeString(t[1])?.start ?? null : null;
   };
   let m: RegExpExecArray | null;
+  const abs = (date: ISODate | null, mm: RegExpExecArray): DateParse | null => {
+    if (!date) return null;
+    return { kind: 'abs', date, minutes: timeAfter(s.slice(mm[0].length)), rest: orig.slice(mm[0].length) };
+  };
+  const rel = (n: number | null, mm: RegExpExecArray): DateParse | null =>
+    n && n >= 1 && n <= 99 ? { kind: 'rel', day: n, minutes: null, rest: orig.slice(mm[0].length) } : null;
   // 2026-11-21、2026/11/21、2026.11.21、2026年11月21日
-  if ((m = /^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?/.exec(s))) {
-    const date = ymd(+m[1], +m[2], +m[3]);
-    return date ? { kind: 'abs', date, minutes: timeAfter(s.slice(m[0].length)) } : null;
-  }
+  if ((m = /^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?/.exec(s))) return abs(ymd(+m[1], +m[2], +m[3]), m);
   // 11/21/2026（美式）或 21/11/2026（日在前，第一個數字 > 12 時）
   if ((m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/.exec(s))) {
     const a = +m[1], b = +m[2];
-    const date = a > 12 ? ymd(+m[3], b, a) : ymd(+m[3], a, b);
-    return date ? { kind: 'abs', date, minutes: timeAfter(s.slice(m[0].length)) } : null;
+    return abs(a > 12 ? ymd(+m[3], b, a) : ymd(+m[3], a, b), m);
   }
-  // 11/21、11-21、11.21、11月21日（後面可接星期）
-  if ((m = /^(\d{1,2})\s*[/.\-月]\s*(\d{1,2})\s*日?(?![\d/.])/.exec(s))) {
-    const date = monthDay(+m[1], +m[2], ctx);
-    return date ? { kind: 'abs', date, minutes: timeAfter(s.slice(m[0].length)) } : null;
-  }
+  // 11/21、11-21、11.21、11月21日（後面可接星期與日期列的文字）
+  if ((m = /^(\d{1,2})\s*[/.\-月]\s*(\d{1,2})\s*日?(?![\d/.])/.exec(s))) return abs(monthDay(+m[1], +m[2], ctx), m);
   // 第1天、第一天、第 2 日
-  if ((m = /^第\s*([0-9零一二兩三四五六七八九十]+)\s*[天日]/.exec(s))) {
-    const n = parseSmallNumber(m[1]);
-    return n && n >= 1 && n <= 99 ? { kind: 'rel', day: n, minutes: null } : null;
-  }
+  if ((m = /^第\s*([0-9零一二兩三四五六七八九十]+)\s*[天日]/.exec(s))) return rel(parseSmallNumber(m[1]), m);
   // Day 1、Day1、D1
-  if ((m = /^(?:day\s*|d)(\d{1,2})(?![\d/.:])/i.exec(s))) return +m[1] >= 1 ? { kind: 'rel', day: +m[1], minutes: null } : null;
+  if ((m = /^(?:day\s*|d)(\d{1,2})(?![\d/.:])/i.exec(s))) return rel(+m[1], m);
   // 1天、1日目
-  if ((m = /^(\d{1,2})\s*(?:天|日目)/.exec(s))) return +m[1] >= 1 ? { kind: 'rel', day: +m[1], minutes: null } : null;
+  if ((m = /^(\d{1,2})\s*(?:天|日目)/.exec(s))) return rel(+m[1], m);
   // 純數字：1～99 視為第幾天；5 位數視為 Excel 日期序號
   if (/^\d{1,2}$/.test(s) && +s >= 1) return { kind: 'rel', day: +s, minutes: null };
   if (/^\d{5}(\.\d+)?$/.test(s)) return parseDateCell(+s, ctx);
   return null;
+}
+
+/** 日期後面的星期：（四）、(Thu)、週四、星期四、Thu */
+const WEEKDAY_RE =
+  /^\s*(?:[（(]\s*(?:週|周|星期|禮拜)?[一二三四五六日天]\s*[)）]|[（(]\s*(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s*[)）]|(?:週|周|星期|禮拜)[一二三四五六日天]|(?:mon|tue|wed|thu|fri|sat|sun)(?:day|sday|nesday|rsday|urday)?\.?(?![a-z]))/i;
+
+/** 日期後面剩下的文字 → 日期列的內容（去掉星期、時間與開頭的分隔符號）；只有日期時回傳空字串 */
+function bannerText(rest: string | undefined): string {
+  let s = (rest ?? '').trim();
+  for (let k = 0; k < 4; k++) {
+    const before = s;
+    s = s
+      .replace(WEEKDAY_RE, '')
+      .replace(/^\s*[0-2]?\d:[0-5]\d(?::\d{2})?(?:\s*[-~～–—]\s*[0-2]?\d:[0-5]\d)?/, '')
+      .replace(/^[\s｜|:：,，、\-–—~～・·/／]+/, '');
+    if (s === before) break;
+  }
+  return s.trim();
+}
+
+/** 日期欄寫「未定」「待定」：這一列沒有日期（不沿用上一列） */
+const UNDATED_RE = /^(未定|待定|未排|未排定|未安排|待確認|不確定|彈性|機動|tbd|tba|n\/?a|[?？]+|[-–—]+)$/i;
+/** 看起來想寫日期（但日期不存在，例如 2/30、13/45） */
+const DATE_LIKE_RE = /^\d{1,4}\s*[-/.年月]\s*\d/;
+
+/** 日期欄只寫星期（「週六」「(Sat)」）：和空白一樣沿用上一列 */
+const isWeekdayOnly = (s: string) => !!s && !bannerText(s.replace(WEEKDAY_RE, '')) && WEEKDAY_RE.test(s);
+
+/** 日期欄裡不是日期的一句話（「登機門可能更動」）：當作這一列的旁註，日期沿用上一列 */
+function isSideComment(s: string): boolean {
+  return !UNDATED_RE.test(s) && !DATE_LIKE_RE.test(toHalfWidth(s)) && /\p{L}/u.test(s) && [...s].length >= 2;
 }
 
 /** 時間字串 → 開始分鐘（與結束分鐘，若是「09:30-11:00」） */
@@ -538,9 +650,24 @@ const CURRENCY_WORDS: [RegExp, string][] = [
   [/EUR|歐元|€/i, 'EUR'],
   [/GBP|英鎊|£/i, 'GBP'],
   [/THB|泰[銖幣]|฿/i, 'THB'],
+  [/NZ\$|NZD|紐幣|紐西蘭幣/i, 'NZD'],
+  [/CA\$|CAD|加幣|加拿大幣/i, 'CAD'],
+  [/AU\$|AUD|澳幣|澳元/i, 'AUD'],
   [/SGD|S\$|新加坡幣|新幣/i, 'SGD'],
   [/VND|越南盾|₫/i, 'VND'],
 ];
+/** 用「$」記帳的貨幣：當地貨幣是其中之一時，只寫「$」就是當地貨幣；其他情況「$」算美金 */
+const DOLLAR_CURRENCIES = new Set(['USD', 'TWD', 'HKD', 'SGD', 'AUD', 'CAD', 'NZD', 'MXN']);
+
+/** 文字裡寫明的幣別（代碼、中文名稱或符號）；沒寫回傳 null。「$」「¥」依當地貨幣判斷是哪一種 */
+function writtenCurrency(s: string, local: string): string | null {
+  for (const [re, code] of CURRENCY_WORDS) if (re.test(s)) return code;
+  if (/(?:^|[^a-z])C\$/i.test(s)) return 'CAD';
+  if (/(?:^|[^a-z])A\$/i.test(s)) return 'AUD';
+  if (s.includes('$')) return DOLLAR_CURRENCIES.has(local) ? local : 'USD';
+  if (/[¥￥]/.test(s)) return local === 'CNY' ? 'CNY' : 'JPY';
+  return null;
+}
 
 let isoCodes: Set<string> | null | undefined;
 /** 真的 ISO 4217 幣別代碼（瀏覽器不支援查詢時一律接受） */
@@ -560,14 +687,64 @@ function isIsoCurrency(code: string): boolean {
 function parseCurrency(v: unknown, local: string): string | null {
   const s = toHalfWidth(cellText(v)).trim();
   if (!s) return null;
-  for (const [re, code] of CURRENCY_WORDS) if (re.test(s)) return code;
-  if (/^[a-z]{3}$/i.test(s)) {
+  if (/^[a-z]{3}$/i.test(s) && !CURRENCY_WORDS.some(([re]) => re.test(s))) {
     const code = s.toUpperCase();
     return isIsoCurrency(code) ? code : null;
   }
-  if (/[¥￥]/.test(s)) return local === 'CNY' ? 'CNY' : 'JPY';
-  return null;
+  return writtenCurrency(s, local);
 }
+
+/** 預估花費儲存格的解讀 */
+interface CostCell {
+  amount?: number;
+  /** 寫明的幣別（「$25」→ USD）；沒寫就是當地貨幣 */
+  currency?: string;
+  /** 不只是金額的原文（「$18–24/人」「已訂」「含在團費」），記進備註「費用：…」 */
+  text?: string;
+}
+/** 寫這些字的花費沒有金額（「消費滿額免費 3hr」的 3 不是金額） */
+const NO_AMOUNT_RE = /免費|免费|free|已含|含在|包含|團費|見費用表|費用表/i;
+/** 數字後面接這些字就不是金額（2hr、90 分、4 mile） */
+const NOT_MONEY_AFTER_RE = /^\s*(?:hrs?|h(?![a-z])|小時|分鐘|分|mins?|人|位|miles?|mi(?![a-z])|km|公里|天|晚|次|張|個|歲|%|折|點|號)/i;
+/** 只有金額（和幣別）的寫法：不用另外記原文 */
+const PLAIN_AMOUNT_RE =
+  /^(?:[a-z]{0,3}\$|[¥￥€£₩฿₫])?\s*-?\d+(?:\.\d+)?\s*(?:萬|千|k)?\s*(?:[a-z]{3}|円|元|日圓|日幣|美金|美元|台幣|臺幣|韓元|港幣|人民幣|歐元|英鎊|泰銖)?$/i;
+
+/**
+ * 預估花費：'$18–24' → 18（USD，原文記備註）、'$49.99+稅' → 49.99、'$4.50/60 分' → 4.5、'¥1,200' → 1200、
+ * '1.2萬' → 12000、'已訂'／'免費'／'含在團費' → 沒有金額（原文記備註）。
+ */
+function parseCostCell(v: unknown, local: string): CostCell {
+  if (typeof v === 'number') return Number.isFinite(v) ? { amount: v } : {};
+  const raw = cellText(v);
+  const s = toHalfWidth(raw).replace(/(\d)[,，](?=\d{3}(?!\d))/g, '$1').trim();
+  if (!s) return {};
+  const currency = writtenCurrency(s, local) ?? undefined;
+  const nums = [...s.matchAll(/\d+(?:\.\d+)?/g)];
+  let pick: RegExpMatchArray | undefined;
+  // 幣別符號後面的數字（「$4.50/60 分」是 4.50，不是 60）
+  pick = nums.find((m) => /[$¥￥€£₩฿₫]\s*$/.test(s.slice(0, m.index)));
+  if (!pick && !(NO_AMOUNT_RE.test(s) && !currency)) {
+    // 其他：第一個不是時間、人數、距離的數字
+    pick = nums.find((m) => !NOT_MONEY_AFTER_RE.test(s.slice(m.index! + m[0].length)) && !/[/:]\s*$/.test(s.slice(0, m.index)));
+  }
+  let amount: number | undefined;
+  if (pick) {
+    let n = parseFloat(pick[0]);
+    const after = s.slice(pick.index! + pick[0].length);
+    if (/^\s*萬/.test(after)) n *= 10_000;
+    else if (/^\s*千/.test(after) || /^k(?![a-z])/i.test(after)) n *= 1_000;
+    if (Number.isFinite(n)) amount = n;
+  }
+  const out: CostCell = {};
+  if (amount != null) out.amount = amount;
+  if (currency) out.currency = currency;
+  if (amount == null || !PLAIN_AMOUNT_RE.test(s)) out.text = raw;
+  return out;
+}
+
+/** 金額顯示（備註用）：25、49.99、1,200 */
+const fmtAmount = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 2 });
 
 /** 別名比對：中文用「包含」，英文用整字 */
 const hasWord = (text: string, w: string) =>
@@ -588,14 +765,130 @@ function matchItemType(text: string): ItemType | null {
   return null;
 }
 
-/** 類型儲存格 → 類型（景點／餐廳／交通…、英文 key、或關鍵字） */
+/**
+ * 類別欄常用的詞（手排行程表的「類別」多半是動作或細分類：機場、宵夜、賽事、美術館…）。
+ * 先整格比對，再比對包含（單字不比對包含）。
+ */
+const CATEGORY_WORDS: [ItemType, string[]][] = [
+  ['transport', ['機場', '航班', '班機', '飛機', '起飛', '降落', '轉機', '租車', '還車', '取車', '停車', '加油', '出發', '抵達', '回程', '去程', '接駁', '移動', '交通', '開車', '自駕', '搭車', '轉乘', '入境', '出境', 'flight', 'transfer', 'drive']],
+  ['food', ['早餐', '午餐', '晚餐', '宵夜', '消夜', '早午餐', '下午茶', '咖啡', '用餐', '甜點', '小吃', '點心', '酒吧', '餐廳', 'brunch', 'cafe', 'coffee', 'bar']],
+  ['stay', ['住宿', '入住', '退房', '起床', '整理', '休息', '打包', '午睡', '睡覺', '回飯店', '飯店', '旅館', 'check-in', 'check-out', 'hotel']],
+  ['shop', ['購物', '逛街', 'outlet', 'outlets', '伴手禮', '採買', '血拼', 'shopping']],
+  ['sight', ['景點', '美術館', '博物館', '拍照', '夜景', '樂園', '主題樂園', '遊樂園', '體驗', '活動', '表演', '看秀', '秀', '賽車', 'f1', '賽事', '比賽', '球賽', '演唱會', '展覽', '散步', '觀光', '參觀', '一日遊', 'tour', 'show', 'museum']],
+];
+
+function matchCategoryWord(s: string, exact: boolean): ItemType | null {
+  for (const [key, words] of CATEGORY_WORDS) {
+    if (words.some((w) => (exact ? w === s : [...w].length >= 2 && hasWord(s, w)))) return key;
+  }
+  return null;
+}
+
+/** 類型儲存格 → 類型（景點／餐廳／交通…、英文 key、類別常用詞、或關鍵字） */
 function parseItemType(v: unknown): ItemType | null {
   const s = cellText(v).toLowerCase();
   if (!s) return null;
   const exact = ITEM_TYPES.find((t) => t.key === s || t.label === s);
   if (exact) return exact.key;
   if (s === '其他' || s === 'other') return 'other';
-  return matchItemType(s);
+  return matchCategoryWord(s, true) ?? matchItemType(s) ?? matchCategoryWord(s, false);
+}
+
+/** 類別欄的原文要不要留著當標籤：和標準類型名稱一樣（「景點」「交通」）就不用 */
+function categoryTag(raw: string, type: ItemType): string | undefined {
+  const s = raw.replace(/\s+/g, ' ').trim();
+  if (!s || [...s].length > 12) return undefined;
+  const t = itemType(type);
+  if (s === t.label || s.toLowerCase() === t.key || s === '其他' || s.toLowerCase() === 'other') return undefined;
+  return s;
+}
+
+// ───────────────────────────── 名稱、地點（規則在 places.ts） ─────────────────────────────
+
+/** places.ts 出錯時的備援：只認 ★ ◇ 標記 */
+function fallbackCleanTitle(raw: string): { title: string; flag?: 'must' | 'optional' } {
+  const flag = /[★☆]/.test(raw) ? ('must' as const) : /[◇◆]/.test(raw) ? ('optional' as const) : undefined;
+  const title = raw.replace(/[★☆◇◆⚠]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return { title: title || raw.trim(), flag };
+}
+
+/** 名稱 → 乾淨名稱與 ★／◇ 標記 */
+function titleOf(raw: string): { title: string; flag?: 'must' | 'optional' } {
+  try {
+    const r = cleanTitle(raw);
+    if (r && typeof r.title === 'string') {
+      const title = r.title.replace(/\s+/g, ' ').trim();
+      return title ? { title, flag: r.flag } : { ...fallbackCleanTitle(raw), flag: r.flag };
+    }
+  } catch {
+    /* 用下面的備援 */
+  }
+  return fallbackCleanTitle(raw);
+}
+
+/** 名稱清理時拿掉的補充說明（括號內容、破折號後面的說明），記進備註，資訊不會不見 */
+function droppedDetail(raw: string, clean: string): string {
+  const parts: string[] = [];
+  const has = (x: string) => clean.replace(/\s+/g, '').includes(x.replace(/\s+/g, ''));
+  for (const m of raw.matchAll(/[（(【〔[]([^（）()【】〔〕[\]]+)[）)】〕\]]/g)) {
+    const inner = m[1].trim();
+    if (inner && !has(inner) && !parts.includes(inner)) parts.push(inner);
+  }
+  const dash = /\s[—–]+\s*([^—–]+)$/.exec(raw);
+  if (dash) {
+    const tail = dash[1].replace(/[（(【〔[][^（）()【】〔〕[\]]*[）)】〕\]]/g, '').trim();
+    if (tail && !has(tail) && !parts.some((p) => p.includes(tail))) parts.push(tail);
+  }
+  return parts.join('；');
+}
+
+/** 「地點 / 交通」欄 → 分類（places.ts 出錯時整格當地點，和以前一樣） */
+function locationOf(raw: string): LocationCell {
+  try {
+    const r = classifyLocation(raw);
+    if (r && typeof r.kind === 'string') return r;
+  } catch {
+    /* 用下面的備援 */
+  }
+  return { kind: 'place', value: raw };
+}
+
+/** 依地點欄的分類填進行程點：地址／地點名稱 → 地址（導航用）；路線 → 起訖；交通說明與泛稱 → 交通說明 */
+function applyLocation(it: DraftItem, raw: string) {
+  const loc = locationOf(raw);
+  switch (loc.kind) {
+    case 'address':
+    case 'place':
+      it.address = (loc.value || raw).trim();
+      break;
+    case 'route': {
+      const from = (loc.from ?? '').trim();
+      const to = (loc.to ?? loc.value ?? '').trim();
+      if (from || to) it.route = { from, to };
+      else it.transit = raw;
+      break;
+    }
+    case 'transit':
+    case 'generic':
+      it.transit = raw;
+      break;
+    case 'empty':
+      break;
+  }
+}
+
+/** 日期列文字 → 城市與住宿（places.ts 出錯時只留原文） */
+function dayOf(label: string): ImportDay {
+  try {
+    const b = parseDayBanner(label);
+    const out: ImportDay = { label: (b.label || label).trim() };
+    if (b.cities?.length) out.cities = [...b.cities];
+    if (b.city) out.city = b.city;
+    if (b.lodging) out.lodging = b.lodging;
+    return out;
+  } catch {
+    return { label };
+  }
 }
 
 /** 花費分類關鍵字（「車票」「機票」算交通，「門票」算門票） */
@@ -673,6 +966,7 @@ export function interpretSheets(
   let relResolved = false;
   let expenseNoDate = 0;
   let titleAbove = '';
+  const days: Record<string, ImportDay> = {};
 
   for (const [sheetName, rowsIn] of Object.entries(raw ?? {})) {
     const rows = (Array.isArray(rowsIn) ? rowsIn : []).map((r) => (Array.isArray(r) ? r : []));
@@ -712,21 +1006,45 @@ export function interpretSheets(
     const get = (row: unknown[], f: Field): unknown => (map[f] === undefined ? null : row[map[f]!]);
     const ctx: DateCtx = { startDate, anchor: null };
     let prev: DateParse | null = null;
+    /** 日期列（只記行程表的；同一天寫了好幾次時以第一次為準） */
+    const noteDay = (dp: DateParse) => {
+      if (isExpense) return;
+      const text = bannerText(dp.rest);
+      if (!text) return;
+      const key = dp.kind === 'abs' ? dp.date : startDate ? addDays(startDate, dp.day - 1) : relDayKey(dp.day);
+      if (!days[key]) days[key] = dayOf(text);
+    };
+    // 標題格裡嵌的第一天日期列：標題列下面的行程點就是這一天
+    if (header.seed) {
+      const sp = parseDateCell(header.seed, ctx);
+      if (sp) {
+        if (sp.kind === 'abs') ctx.anchor = sp.date;
+        prev = { ...sp, rest: undefined };
+        noteDay(sp);
+      }
+    }
 
     for (const row of rows.slice(header.index + 1)) {
       if (!row.some((c) => cellText(c) !== '')) continue;
-      // 日期：空白沿用上一列（合併儲存格常見）
+      // 日期：空白沿用上一列（合併儲存格常見）；寫了一句話的是旁註，日期也沿用上一列
       const dateRaw = get(row, 'date');
-      let dp = cellText(dateRaw) ? parseDateCell(dateRaw, ctx) : null;
+      const dateText = cellText(dateRaw);
+      let dp = dateText ? parseDateCell(dateRaw, ctx) : null;
+      let sideNote = '';
       if (dp?.kind === 'abs') ctx.anchor = dp.date;
-      if (dp) prev = dp;
-      else if (!cellText(dateRaw)) dp = prev ? { ...prev, minutes: null } : null;
+      if (dp) {
+        noteDay(dp);
+        prev = { ...dp, rest: undefined };
+      } else if (!dateText || isWeekdayOnly(dateText) || isSideComment(dateText)) {
+        if (dateText && !isWeekdayOnly(dateText)) sideNote = dateText;
+        dp = prev ? { ...prev, minutes: null } : null;
+      }
 
-      const title = cellText(get(row, 'title'));
+      const rawTitle = cellText(get(row, 'title'));
       const otherCells = row.some((c, k) => k !== map.date && cellText(c) !== '');
 
-      if (TOTAL_ROW_RE.test(title) || TOTAL_ROW_RE.test(cellText(dateRaw))) continue;
-      if (EXAMPLE_RE.test(title)) {
+      if (TOTAL_ROW_RE.test(rawTitle) || TOTAL_ROW_RE.test(dateText)) continue;
+      if (EXAMPLE_RE.test(rawTitle)) {
         skippedExamples++;
         continue;
       }
@@ -752,7 +1070,7 @@ export function interpretSheets(
           continue;
         }
         const category =
-          parseExpenseCategory(get(row, 'type')) ?? matchExpenseCategory(title) ?? 'other';
+          parseExpenseCategory(get(row, 'type')) ?? matchExpenseCategory(rawTitle) ?? 'other';
         // 沒寫日期：記在出發日；還不知道出發日就先空著，由 applyImport 依行程的出發日決定
         if (!date && !dayOffset) {
           expenseNoDate++;
@@ -760,7 +1078,7 @@ export function interpretSheets(
         }
         const e: DraftExpense = {
           date,
-          title: title || EXPENSE_CATEGORIES.find((c) => c.key === category)!.label,
+          title: rawTitle || EXPENSE_CATEGORIES.find((c) => c.key === category)!.label,
           amount,
           currency: parseCurrency(get(row, 'currency'), local) ?? parseCurrency(amountRaw, local) ?? local,
           category,
@@ -773,32 +1091,47 @@ export function interpretSheets(
         continue;
       }
 
-      if (!title) {
+      if (!rawTitle) {
         if (otherCells) skippedNoTitle++;
         continue;
       }
+      // 名稱：去掉 ★ ◇ 標記（記成 flag）與括號補充（補充記進備註）
+      const { title, flag } = titleOf(rawTitle);
+      const typeText = cellText(get(row, 'type'));
       const it: DraftItem = {
         date,
         title,
-        type: parseItemType(get(row, 'type')) ?? matchItemType(title) ?? 'other',
+        type: parseItemType(typeText) ?? matchItemType(title) ?? 'other',
         done: false,
       };
       if (dayOffset) it.dayOffset = dayOffset;
+      if (flag) it.flag = flag;
+      const tag = categoryTag(typeText, it.type);
+      if (tag) it.tag = tag;
+      // 時間照寫的（23:00 之後的「0:45」是當天深夜，不搬到隔天、不重排）
       const t = parseTimeCell(get(row, 'time'));
       if (t) it.time = t.time;
       else if (dp?.minutes) it.time = fromMinutes(dp.minutes);
-      let address = cellText(get(row, 'address'));
+      let location = cellText(get(row, 'address'));
       let link = cellText(get(row, 'link'));
-      if (looksLikeUrl(address)) {
-        if (!link) link = address;
-        address = '';
+      if (looksLikeUrl(location)) {
+        if (!link) link = location;
+        location = '';
       }
-      if (address) it.address = address;
+      if (location) applyLocation(it, location);
       if (link) it.link = normUrl(link);
-      const note = cellText(get(row, 'note'));
+      // 預估花費：金額＋寫明的幣別；不只是金額的原文（區間、每人、已訂、含在團費）記進備註
+      const cost = parseCostCell(get(row, 'cost'), local);
+      if (cost.amount != null) it.cost = cost.amount;
+      if (cost.currency && cost.currency !== local && cost.amount != null) it.costCurrency = cost.currency;
+      const detail = droppedDetail(rawTitle, title);
+      const note = [
+        sideNote && `提醒：${sideNote}`,
+        detail && `補充：${detail}`,
+        cellText(get(row, 'note')),
+        cost.text && `費用：${cost.text}`,
+      ].filter(Boolean).join('\n');
       if (note) it.note = note;
-      const cost = parseNumber(get(row, 'cost'));
-      if (cost != null) it.cost = cost;
       const dur = parseDuration(get(row, 'duration'));
       if (dur) it.durationMin = dur;
       else if (t?.end != null) {
@@ -807,6 +1140,8 @@ export function interpretSheets(
       }
       const rating = parseRating(get(row, 'rating'));
       if (rating != null) it.rating = rating;
+      // 試算表的順序：同一天照這個順序排（跨換日線的航班、過午夜的「0:45」不會被時間排序打亂）
+      it.seq = items.length;
       items.push(it);
     }
   }
@@ -840,9 +1175,20 @@ export function interpretSheets(
     expenses,
     warnings,
     hasRelativeDays: relUnresolved,
-    suggestedName: fileName || titleAbove || '匯入的行程',
+    suggestedName: fileName || titleAbove || nameFromDays(days) || '匯入的行程',
     columns: { items: [...itemColumns], expenses: [...expenseColumns] },
+    ...(Object.keys(days).length ? { days } : {}),
   };
+}
+
+/** 沒有檔名也沒有標題時的行程名稱：依序過夜的城市（最多 3 個），例如「西雅圖・波特蘭」 */
+function nameFromDays(days: Record<string, ImportDay>): string {
+  const cities: string[] = [];
+  for (const k of Object.keys(days).sort(compareDayKeys)) {
+    const c = days[k].city?.trim();
+    if (c && !cities.includes(c)) cities.push(c);
+  }
+  return cities.slice(0, 3).join('・');
 }
 
 // ───────────────────────────── 套用 ─────────────────────────────
@@ -857,12 +1203,14 @@ function widenDates(t: Trip) {
   if (!t.endDate || ds[ds.length - 1] > t.endDate) t.endDate = ds[ds.length - 1];
 }
 
-type KeepKey = 'time' | 'address' | 'link' | 'note' | 'cost' | 'durationMin' | 'rating';
+type KeepKey = 'time' | 'address' | 'route' | 'transit' | 'tag' | 'link' | 'note' | 'cost' | 'durationMin' | 'rating';
 /** 行程點欄位 ↔ 試算表欄位：試算表沒有這一欄時，以試算表為準更新也保留 App 裡填的值 */
 const ITEM_KEEP: [KeepKey, Field][] = [
-  ['time', 'time'], ['address', 'address'], ['link', 'link'], ['note', 'note'],
-  ['cost', 'cost'], ['durationMin', 'duration'], ['rating', 'rating'],
+  ['time', 'time'], ['address', 'address'], ['route', 'address'], ['transit', 'address'], ['tag', 'type'],
+  ['link', 'link'], ['note', 'note'], ['cost', 'cost'], ['durationMin', 'duration'], ['rating', 'rating'],
 ];
+
+const routeKey = (r: Item['route']) => (r ? `${normKey(r.from)}→${normKey(r.to)}` : '');
 
 /**
  * 同一站：試算表的內容為準，但保留 id、完成狀態、座標（地址沒改時），
@@ -882,6 +1230,11 @@ function mergeItem(old: Item, it: Item, cols: ReadonlySet<Field> | null): Item {
   if (cols && !cols.has('type')) merged.type = old.type;
   const addressChanged = !!merged.address && normKey(merged.address) !== normKey(old.address);
   if (!merged.geo && old.geo && !addressChanged) merged.geo = old.geo;
+  // 導航目的地：手動指定的一律保留；AI 辨識的在地址、路線都沒改時保留（不用再花一次 AI）
+  if (!merged.place && old.place) {
+    const sameWhere = normKey(merged.address) === normKey(old.address) && routeKey(merged.route) === routeKey(old.route);
+    if (old.place.source === 'manual' || (old.place.source === 'ai' && sameWhere)) merged.place = old.place;
+  }
   return merged;
 }
 
@@ -969,24 +1322,148 @@ export function replaceRemovals(
   return { items: before.items.filter((i) => !items.has(i.id)), expenses: before.expenses.filter((e) => !expenses.has(e.id)) };
 }
 
+/** 行程點預估花費最常寫的幣別（不算本國貨幣）；都沒寫回傳 null */
+function dominantCostCurrency(items: readonly DraftItem[], home: string): string | null {
+  const count = new Map<string, number>();
+  for (const it of items) if (it.costCurrency && it.costCurrency !== home) count.set(it.costCurrency, (count.get(it.costCurrency) ?? 0) + 1);
+  let best: string | null = null;
+  let n = 0;
+  for (const [c, k] of count) if (k > n) [best, n] = [c, k];
+  return best;
+}
+
+/**
+ * 依日期列建議行程的城市（首頁大字）：過夜最多天的城市（沒寫城市的日子沿用前一天），
+ * 對照表認得的用英文大寫（「洛杉磯」→「LOS ANGELES」），認不得照原文。沒有日期列回傳空字串。
+ */
+export function suggestTripCity(days: Record<string, Pick<ImportDay, 'city'>> | undefined): string {
+  if (!days) return '';
+  const keys = Object.keys(days).sort(compareDayKeys);
+  const count = new Map<string, number>();
+  let last = '';
+  for (const k of keys) {
+    last = days[k]?.city?.trim() || last;
+    if (last) count.set(last, (count.get(last) ?? 0) + 1);
+  }
+  let best = '';
+  let n = 0;
+  for (const [c, k] of count) if (k > n) [best, n] = [c, k];
+  if (!best) return '';
+  try {
+    const en = findCityAlias(best)?.en;
+    if (en) return en.toUpperCase();
+  } catch {
+    /* 對照表出錯：用原文 */
+  }
+  return best;
+}
+
+/** days 的 key 排序：日期照日期、「__D3」排在日期之後依天數 */
+export function compareDayKeys(a: string, b: string): number {
+  const order = (k: string) => {
+    const m = REL_DAY_KEY.exec(k);
+    return m ? `~${m[1].padStart(3, '0')}` : k;
+  };
+  const x = order(a), y = order(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+const ruleDay = (d: ImportDay): DayMeta => {
+  const out: DayMeta = { source: 'rule' };
+  if (d.label) out.label = d.label;
+  if (d.city) out.city = d.city;
+  if (d.lodging) out.lodging = d.lodging;
+  return out;
+};
+
+/**
+ * 試算表的日期列併進行程的 days：
+ *  - new：直接採用
+ *  - append：原本沒有的日子才加；原本有、又不是手動設定的，只補空著的欄位
+ *  - replace：試算表的日期列為準，但手動設定的日子不動；日期列文字沒變的保留原本的結果（AI 辨識、座標）；
+ *    城市沒變的保留座標。試算表有日期列時，之前規則產生、這次試算表沒有的日子移除（套用後會重新補上），
+ *    AI 與手動的保留；試算表完全沒有日期列時，原本的 days 都不動。
+ */
+function mergeDays(old: Trip['days'], incoming: Record<string, ImportDay>, mode: ImportMode): Trip['days'] {
+  const keys = Object.keys(incoming);
+  if (!keys.length) return old;
+  if (mode === 'new' || !old) return Object.fromEntries(keys.map((k) => [k, ruleDay(incoming[k])]));
+  if (mode === 'append') {
+    const out = { ...old };
+    for (const k of keys) {
+      const cur = out[k];
+      const add = ruleDay(incoming[k]);
+      if (!cur) out[k] = add;
+      else if (cur.source !== 'manual') out[k] = { ...add, ...cur, source: cur.source ?? 'rule' };
+    }
+    return out;
+  }
+  const out: NonNullable<Trip['days']> = {};
+  for (const [k, d] of Object.entries(old)) if (d.source === 'manual' || d.source === 'ai') out[k] = d;
+  for (const k of keys) {
+    const cur = old[k];
+    const next = ruleDay(incoming[k]);
+    if (cur?.source === 'manual') continue;
+    if (cur && normKey(cur.label) === normKey(next.label)) {
+      out[k] = cur;
+      continue;
+    }
+    if (cur?.geo && next.city && normKey(cur.city) === normKey(next.city)) next.geo = cur.geo;
+    out[k] = next;
+  }
+  return out;
+}
+
+/** 規則版地點辨識（每一站的導航目的地、補齊每天的城市）；places.ts 出錯時照原樣回傳 */
+function withRulePlaces(t: Trip): Trip {
+  try {
+    const next = applyRulePlaces(t);
+    return next && Array.isArray(next.items) ? next : t;
+  } catch {
+    return t;
+  }
+}
+
 /**
  * 套用匯入結果：
- *  - new：建立新行程（回傳的 Trip 尚未寫入 store）
+ *  - new：建立新行程（回傳的 Trip 尚未寫入 store）。行程點的預估花費寫明了幣別（「$25」）、
+ *    又沒有記帳在用目前的當地貨幣時，當地貨幣改成那個幣別；沒填城市時用日期列最常過夜的城市。
  *  - append：附加到 trip
- *  - replace：以試算表為準更新 trip（行程點：保留已完成狀態、座標與試算表沒有的欄位，試算表沒有的行程點移除；
- *    花費：見 replaceExpenses）
+ *  - replace：以試算表為準更新 trip（行程點：保留已完成狀態、座標、AI／手動的導航目的地與試算表沒有的欄位，
+ *    試算表沒有的行程點移除；花費：見 replaceExpenses；每天的城市：見 mergeDays）
  * 花費沒有日期或寫「第 N 天」時，依行程的出發日換算（沒有出發日就用最早的行程點日期，再沒有才用今天）。
+ * 最後用 applyRulePlaces 幫每一站組出含城市背景的導航目的地（place.query）。
+ * 預估花費的幣別和行程的當地貨幣不同時，金額不記在 cost（會被當成當地貨幣），改寫在備註。
  */
 export function applyImport(base: Trip, result: ImportResult, mode: ImportMode): Trip {
   const now = Date.now();
   const t = structuredClone(base);
   const start = t.startDate;
 
+  if (mode === 'new') {
+    const dom = dominantCostCurrency(result.items, t.homeCurrency);
+    if (dom && dom !== t.localCurrency && !result.expenses.some((e) => e.currency === t.localCurrency)) {
+      t.localCurrency = dom;
+      t.rate = 1;
+      delete t.rateUpdatedAt;
+    }
+    if (!t.city.trim()) {
+      const city = suggestTripCity(result.days);
+      if (city) t.city = city;
+    }
+  }
+
   const items: Item[] = result.items.map((src) => {
-    const it: Item = { ...structuredClone(src), id: uid(), createdAt: now, updatedAt: now };
+    const { costCurrency, ...draft } = structuredClone(src);
+    const it: Item = { ...draft, id: uid(), createdAt: now, updatedAt: now };
     if (!it.date && it.dayOffset && start) {
       it.date = addDays(start, it.dayOffset - 1);
       delete it.dayOffset;
+    }
+    if (costCurrency && costCurrency !== t.localCurrency && it.cost != null) {
+      // 不同幣別的金額不能當成當地貨幣：原文已經在備註就不重複
+      if (!/(^|\n)費用：/.test(it.note ?? '')) it.note = [it.note, `費用：${fmtAmount(it.cost)} ${costCurrency}`].filter(Boolean).join('\n');
+      delete it.cost;
     }
     return it;
   });
@@ -1018,25 +1495,42 @@ export function applyImport(base: Trip, result: ImportResult, mode: ImportMode):
     t.expenses = expenses;
     if (!t.name.trim()) t.name = result.suggestedName;
   } else if (mode === 'append') {
+    // 附加的行程點接在原本的試算表順序後面（同一天兩次匯入的不會交錯）
+    const offset = t.items.reduce((m, i) => (typeof i.seq === 'number' && Number.isFinite(i.seq) ? Math.max(m, i.seq + 1) : m), 0);
+    for (const it of items) if (it.seq != null) it.seq += offset;
     t.items = [...t.items, ...items];
     t.expenses = [...t.expenses, ...expenses];
   } else {
-    // replace：同日期＋同名稱（沒日期時只比名稱）視為同一站
+    // replace：同日期＋同名稱（沒日期時只比名稱）視為同一站；
+    // 再用去掉 ★ ◇ 標記與括號後的名稱比一次（舊版匯入的名稱還帶著標記）
     const cols = result.columns ? new Set(result.columns.items) : null;
     const used = new Set<string>();
-    t.items = items.map((it) => {
-      const old = t.items.find(
-        (o) => !used.has(o.id) && normKey(o.title) === normKey(it.title) && (it.date == null || o.date === it.date),
-      );
-      if (!old) return it;
-      used.add(old.id);
-      return mergeItem(old, it, cols);
-    });
+    const match: (Item | undefined)[] = [];
+    const sameDay = (o: Item, it: Item) => !used.has(o.id) && (it.date == null || o.date === it.date);
+    const pass = (key: (o: Item) => string) =>
+      items.forEach((it, i) => {
+        if (match[i]) return;
+        const k = normKey(it.title);
+        const old = t.items.find((o) => sameDay(o, it) && key(o) === k);
+        if (!old) return;
+        used.add(old.id);
+        match[i] = old;
+      });
+    pass((o) => normKey(o.title));
+    pass((o) => normKey(titleOf(o.title).title));
+    t.items = items.map((it, i) => (match[i] ? mergeItem(match[i]!, it, cols) : it));
     t.ai = { ...t.ai, dayChecks: {} };
     t.expenses = replaceExpenses(t, expenses, result, now);
   }
 
+  const days = mergeDays(t.days, resolveDayKeys(result.days ?? {}, start), mode);
+  if (days) t.days = days;
+
   widenDates(t);
   t.updatedAt = now;
-  return t;
+  const next = withRulePlaces(t);
+  // 規則版辨識只處理實際日期：還沒有出發日的「第 N 天」日期列（__D3）原樣留著，設定出發日後再換算
+  const rel = Object.entries(t.days ?? {}).filter(([k]) => REL_DAY_KEY.test(k));
+  if (rel.length && next !== t) next.days = { ...(next.days ?? {}), ...Object.fromEntries(rel.filter(([k]) => !next.days?.[k])) };
+  return next;
 }

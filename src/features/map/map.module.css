@@ -246,5 +246,10 @@
 .nav { flex: none; width: 44px; height: 44px; display: grid; place-items: center; text-decoration: none; }
 .nav span { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-3); color: var(--accent); transition: transform var(--dur-1) var(--ease-out), background var(--dur-1), color var(--dur-1); }
 .nav:active span { transform: scale(0.9); background: var(--night); color: var(--night-ink); }
+/* 沒有特定地點（起床、整理）：整列變淡、不放導航鈕（留同寬的空位，對齊其他列） */
+.navNone { flex: none; width: 44px; height: 44px; }
+.noNav .stopTitle { color: var(--muted); font-weight: 500; }
+.noNav .badge { opacity: 0.55; }
+.addrNone { color: var(--faint); font-style: normal; }
 
 .emptyCard { background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-1); padding: 0 8px 18px; }

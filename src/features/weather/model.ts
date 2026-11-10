@@ -1,8 +1,9 @@
 /**
- * 天氣頁的純邏輯（不含 React）：溫度條位置、降雨文字、更新時間。
+ * 天氣頁的純邏輯（不含 React）：溫度條位置、降雨文字、更新時間、多城市行程依城市分組。
  */
 import { toISODate } from '@/domain/dates';
-import type { DailyWeather } from '@/domain/types';
+import type { DailyWeather, ISODate } from '@/domain/types';
+import { findCityAlias } from '@/services/weather';
 
 export interface TempScale {
   lo: number;
@@ -65,4 +66,54 @@ export function fmtUpdated(ms: number, now: Date = new Date()): string {
 /** 'M/D（週X）' */
 export function fmtDayLabel(md: string, wd: string): string {
   return wd ? `${md}（週${wd}）` : md;
+}
+
+/* ---------------- 多城市 ---------------- */
+
+const normName = (s: string) => s.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+
+/** 是不是同一個城市（「波特蘭」＝「Portland」＝「PORTLAND」，用城市對照表判斷） */
+export function sameCityName(a: string | undefined | null, b: string | undefined | null): boolean {
+  const x = a?.trim(), y = b?.trim();
+  if (!x || !y) return false;
+  if (normName(x) === normName(y)) return true;
+  const ax = findCityAlias(x);
+  return !!ax && ax === findCityAlias(y);
+}
+
+/** 去掉重複（同一個城市的不同寫法算重複），保留第一次出現的寫法與順序 */
+export function distinctCities(cities: (string | undefined | null)[]): string[] {
+  const out: string[] = [];
+  for (const c of cities) {
+    const t = c?.trim();
+    if (t && !out.some((u) => sameCityName(u, t))) out.push(t);
+  }
+  return out;
+}
+
+export interface CityGroup {
+  /** 城市（顯示用）；不知道時是空字串 */
+  city: string;
+  dates: ISODate[];
+}
+
+/** 連續在同一個城市的日子分成一組（天氣列表的小標題）；不知道城市的日子併進前一組 */
+export function groupByCity(dates: ISODate[], cityOf: (d: ISODate) => string | undefined | null): CityGroup[] {
+  const out: CityGroup[] = [];
+  for (const d of dates) {
+    const c = cityOf(d)?.trim() ?? '';
+    const last = out[out.length - 1];
+    if (last && (!c || !last.city || sameCityName(last.city, c))) {
+      if (!last.city && c) last.city = c;
+      last.dates.push(d);
+    } else out.push({ city: c, dates: [d] });
+  }
+  return out;
+}
+
+/** 天氣頁標題上方的城市：「西雅圖、波特蘭」；三個以上「西雅圖 等 3 個城市」 */
+export function citiesText(cities: string[]): string {
+  const uniq = distinctCities(cities);
+  if (uniq.length <= 2) return uniq.join('、');
+  return `${uniq[0]} 等 ${uniq.length} 個城市`;
 }

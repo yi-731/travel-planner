@@ -64,6 +64,17 @@
 .caret { transition: transform var(--dur-2) var(--ease-out); }
 .caretOpen { transform: rotate(180deg); }
 
+/* ---------- AI 用量（更多分頁） ---------- */
+.usageSub { display: grid; gap: 6px; padding-top: 4px; }
+.usageBar { display: block; height: 4px; border-radius: var(--r-pill); background: var(--line-strong); overflow: hidden; }
+.usageFill { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width var(--dur-2) var(--ease-out); }
+.usageWarn .usageFill { background: var(--warn); }
+.usageFull .usageFill { background: var(--bad); }
+.usageFull > span:last-child { color: var(--bad); }
+.usageList { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.usageList li { display: flex; justify-content: space-between; gap: 12px; font-size: var(--fs-md); }
+.usageList li > span:last-child { font-weight: 600; }
+
 /* ---------- 安裝到主畫面：三步驟圖解 ---------- */
 .installWrap { display: grid; background: var(--surface-2); }
 .installNote { padding: 14px 16px 0; font-size: var(--fs-sm); color: var(--ink-2); line-height: 1.55; }
@@ -160,6 +171,15 @@
 .testMsg { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sm); color: var(--muted); }
 .testOk { color: var(--good); font-weight: 600; }
 .testFail { font-size: var(--fs-sm); color: var(--bad); line-height: 1.5; margin-top: -4px; }
+.groupPad .switchRow { background: var(--surface-2); }
+/* 各功能大約費用 */
+.costBox { display: grid; gap: 8px; padding: 12px 14px; border-radius: 14px; background: var(--surface-2); }
+.costHead { font-size: var(--fs-sm); font-weight: 700; }
+.costList { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.costList li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: var(--fs-sm); color: var(--ink-2); }
+.costList li small { margin-left: 6px; font-size: var(--fs-xs); color: var(--muted); }
+.costList li > span:last-child { flex: none; font-weight: 600; color: var(--ink); }
+.costBox .padHint { margin-top: 0; }
 .nativeSec { display: grid; gap: 8px; }
 .nativeNote { font-size: var(--fs-xs); color: var(--muted); padding: 0 6px; }
 .inlineSelect {

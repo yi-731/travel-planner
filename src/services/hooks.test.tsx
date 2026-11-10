@@ -185,6 +185,66 @@ describe('useTripWeather', () => {
     expect(r.current?.days.map((d) => d.date)).toEqual(rangeDays(NEW, addDays(NEW, 4)));
   });
 
+  it('多城市行程：先定位每天的城市（寫回 days），再依當天城市抓天氣', async () => {
+    const geoResults: Record<string, unknown> = {
+      Seattle: { name: 'Seattle', admin1: 'Washington', latitude: 47.6062, longitude: -122.3321, feature_code: 'PPLA2', population: 737015, country_code: 'US', timezone: 'America/Los_Angeles' },
+      Portland: { name: 'Portland', admin1: 'Oregon', latitude: 45.5152, longitude: -122.6784, feature_code: 'PPLA2', population: 652503, country_code: 'US', timezone: 'America/Los_Angeles' },
+    };
+    const calls = mockFetch((u) => {
+      if (u.host === 'geocoding-api.open-meteo.com') {
+        const r = geoResults[u.searchParams.get('name') ?? ''];
+        return { results: r ? [r] : [] };
+      }
+      const lats = (u.searchParams.get('latitude') ?? '').split(',');
+      const one = weatherRoute(u);
+      return lats.length > 1 ? lats.map(() => one) : one;
+    });
+    seedTrip('w7', {
+      city: '西雅圖',
+      cityGeo: undefined,
+      startDate: START,
+      endDate: addDays(START, 2),
+      days: { [START]: { city: '西雅圖' }, [addDays(START, 1)]: { city: '波特蘭' }, [addDays(START, 2)]: { label: '一日遊' } },
+    });
+    const r = renderWeather('w7');
+    await waitFor(() => !!tripOf('w7').weather && r.current?.days.length === 3);
+    const t = tripOf('w7');
+    expect(t.days?.[START]?.geo).toMatchObject({ lat: 47.6062, en: 'Seattle', admin1: 'Washington' });
+    expect(t.days?.[addDays(START, 1)]?.geo).toMatchObject({ lat: 45.5152, en: 'Portland' });
+    // 行程城市直接沿用同城市那天的座標，不再查一次
+    expect(t.cityGeo).toMatchObject({ lat: 47.6062, lng: -122.3321 });
+    const geoCalls = calls.filter((u) => u.host === 'geocoding-api.open-meteo.com').map((u) => u.searchParams.get('name'));
+    expect(geoCalls).toEqual(['Seattle', 'Portland']);
+    const fc = calls.filter((u) => u.host === 'api.open-meteo.com');
+    expect(fc.at(-1)?.searchParams.get('latitude')).toBe('47.6062,45.5152');
+    expect(r.current?.days.map((d) => d.place)).toEqual(['西雅圖', '波特蘭', '波特蘭']);
+  });
+
+  it('某天的城市因連線失敗沒定位到：不當成「找不到」，重新整理（或稍後）會再查', async () => {
+    let portlandTries = 0;
+    const calls = mockFetch((u) => {
+      if (u.host === 'geocoding-api.open-meteo.com') {
+        const name = u.searchParams.get('name');
+        if (name === 'Portland' && portlandTries++ < 1) return undefined; // 第一次連不上
+        if (name === 'Portland') return { results: [{ name: 'Portland', admin1: 'Oregon', latitude: 45.5152, longitude: -122.6784, feature_code: 'PPLA2', population: 652503, country_code: 'US' }] };
+        if (name === 'Seattle') return { results: [{ name: 'Seattle', admin1: 'Washington', latitude: 47.6062, longitude: -122.3321, feature_code: 'PPLA2', population: 737015, country_code: 'US' }] };
+        return { results: [] };
+      }
+      const lats = (u.searchParams.get('latitude') ?? '').split(',');
+      const one = weatherRoute(u);
+      return lats.length > 1 ? lats.map(() => one) : one;
+    });
+    // 同一次查詢裡另一天（西雅圖）有查到：以前會把連不上的波特蘭也記成「找不到」，這次開 App 都不再查
+    seedTrip('w8', { startDate: START, endDate: addDays(START, 1), days: { [START]: { city: '西雅圖' }, [addDays(START, 1)]: { city: '波特蘭', label: '波特蘭' } } });
+    const r = renderWeather('w8');
+    await waitFor(() => r.current?.loading === false && portlandTries >= 1 && !!tripOf('w8').days?.[START]?.geo);
+    expect(tripOf('w8').days?.[addDays(START, 1)]?.geo).toBeUndefined();
+    act(() => r.current!.refresh());
+    await waitFor(() => !!tripOf('w8').days?.[addDays(START, 1)]?.geo);
+    expect(tripOf('w8').days?.[addDays(START, 1)]?.geo).toMatchObject({ lat: 45.5152, en: 'Portland' });
+    expect(calls.filter((u) => u.searchParams.get('name') === 'Portland').length).toBe(2);
+  });
+
   it('城市換了：舊座標的天氣不顯示', async () => {
     mockFetch(weatherRoute);
     seedTrip('w5');

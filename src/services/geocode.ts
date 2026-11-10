@@ -6,6 +6,8 @@
 import { haversineKm } from '@/domain/schedule';
 import type { Item, LatLng, Trip } from '@/domain/types';
 import { fetchJson, isAbort, sleep } from './net';
+import { dayMetaFor } from './places';
+import { findCitiesInText, findCityAlias, geocodeTravelCity, type CityAlias } from './weather';
 
 const SERVICE = '地點搜尋服務';
 /** 離城市中心超過這個距離的結果視為查錯（例如同名的另一個地方） */
@@ -84,21 +86,33 @@ export function cityHint(trip: Pick<Trip, 'city' | 'cityGeo'>): string {
 /** 看起來是路線而不是地點的標題（「桃園機場 → 關西機場」） */
 const ROUTE_LIKE = /→|->|⇒|➝|＞|>/;
 
+/** 每個行程點最多查幾次（每次間隔 1.1 秒） */
+const MAX_QUERIES = 4;
+
 /**
  * 一個行程點要依序嘗試的查詢字串（純函式）：
- * 地址 → 名稱 → 名稱＋城市。完整的日本地址 Photon 常查不到、名稱反而查得到；
+ * 地點辨識的導航目的地（含城市背景）→ 目的地名稱 → 地址 → 名稱 → 名稱＋城市。完整的日本地址 Photon 常查不到、名稱反而查得到；
  * 名稱加城市放最後，因為一日遊（例如住京都、去奈良）加上城市反而會查不到。
  */
-export function placeQueries(it: Pick<Item, 'address' | 'title'>, city: string): string[] {
+export function placeQueries(it: Pick<Item, 'address' | 'title'> & { place?: Item['place'] }, city: string): string[] {
   const address = (it.address ?? '').trim();
   const title = it.title.trim();
   const out: string[] = [];
-  if (address) out.push(address);
+  const pq = (it.place?.query ?? '').trim();
+  if (pq) {
+    out.push(pq);
+    const name = (it.place?.name ?? '').trim();
+    // 只有名稱（不含城市、國家）：Photon 對很長的「名稱, 城市, 州, 國家」有時反而查不到
+    const core = pq.split(/\s*,\s*/)[0];
+    if (name && !ROUTE_LIKE.test(name)) out.push(name);
+    if (core && core !== name) out.push(core);
+  }
+  if (address && !ROUTE_LIKE.test(address)) out.push(address);
   if (title && !ROUTE_LIKE.test(title)) {
     out.push(title);
     if (city && !title.toLowerCase().includes(city.toLowerCase())) out.push(`${title} ${city}`);
   }
-  return [...new Set(out)];
+  return [...new Set(out)].slice(0, pq ? MAX_QUERIES : undefined);
 }
 
 /** 已有座標的行程點的中位數位置（沒有城市座標時當作搜尋中心） */
@@ -112,15 +126,25 @@ export function itemsCenter(trip: Pick<Trip, 'items'>): LatLng | undefined {
 /** 搜尋中心：城市座標，沒有就用已定位行程點的中位數（要傳完整的行程，不是只有待定位的那些） */
 export const searchCenter = (trip: Pick<Trip, 'cityGeo' | 'items'>): LatLng | undefined => trip.cityGeo ?? itemsCenter(trip);
 
-/** 這個行程點有沒有東西可以拿來定位 */
-export const canGeocode = (it: Pick<Item, 'geo' | 'address' | 'title' | 'link'>) =>
-  !it.geo && !!((it.address ?? '').trim() || it.title.trim() || (it.link ?? '').trim());
+/** 這個行程點有沒有東西可以拿來定位（地點辨識判斷為「起床」「整理」這類沒有地點的，不定位） */
+export const canGeocode = (it: Pick<Item, 'geo' | 'address' | 'title' | 'link'> & { place?: Item['place'] }) =>
+  !it.geo && it.place?.navigable !== false && !!((it.address ?? '').trim() || it.title.trim() || (it.link ?? '').trim());
+
+/** 導航目的地提到的城市（「Todai-ji, Nara, Japan」→ 奈良）；同時提到當天城市時以當天為準 */
+function queryCity(query: string, dayCity: string | undefined): CityAlias | undefined {
+  const ms = findCitiesInText(query).map((m) => m.alias);
+  if (!ms.length) return undefined;
+  const day = dayCity ? findCityAlias(dayCity) : undefined;
+  if (day && ms.includes(day)) return undefined;
+  return ms[ms.length - 1];
+}
 
 /**
  * 幫行程中還沒有座標的行程點補座標（節流：每秒最多 1 筆）。
  * 每找到一筆就呼叫 onResult，由呼叫端寫回 store。回傳成功筆數。
- * 先試 Google 地圖連結（不用連網），再依序查地址、名稱、名稱＋城市。
- * opts.near：搜尋中心（只傳待定位的行程點時，用 searchCenter(完整行程) 算好傳進來）。
+ * 先試 Google 地圖連結（不用連網），再依序查導航目的地（地點辨識結果）、地址、名稱、名稱＋城市。
+ * 搜尋中心：那天的城市（多城市行程每天不同；目的地在別的城市時用那個城市，例如一日遊）；
+ * 沒有才用 opts.near（只傳待定位的行程點時，用 searchCenter(完整行程) 算好傳進來）。離中心超過 300 公里的結果不採用。
  * signal 取消時安靜停止並回傳目前的筆數；連線失敗時丟出中文錯誤（已找到的仍已透過 onResult 回報）。
  */
 export async function geocodeMissing(
@@ -130,7 +154,21 @@ export async function geocodeMissing(
   opts?: { near?: LatLng },
 ): Promise<number> {
   const near = opts?.near ?? searchCenter(trip);
-  const city = cityHint(trip);
+  const tripCity = cityHint(trip);
+  /** 一趟執行中查過的城市座標（同一個城市只查一次；查不到或連線失敗記 null） */
+  const cityGeo = new Map<string, LatLng | null>();
+  const cityCenter = async (city: string): Promise<LatLng | undefined> => {
+    const key = (findCityAlias(city)?.en ?? city).trim().toLowerCase();
+    if (!cityGeo.has(key)) {
+      const g = await geocodeTravelCity(city, signal).catch((e: unknown) => {
+        if (isAbort(e)) throw e;
+        return null;
+      });
+      cityGeo.set(key, g ? { lat: g.lat, lng: g.lng } : null);
+    }
+    return cityGeo.get(key) ?? undefined;
+  };
+  const multiCity = Object.values(trip.days ?? {}).some((m) => !!m?.city?.trim());
   let ok = 0;
   let lastAt = 0;
   try {
@@ -143,11 +181,20 @@ export async function geocodeMissing(
         ok++;
         continue;
       }
+      const day = dayMetaFor(trip, it.date);
+      let center: LatLng | undefined = day?.geo ? { lat: day.geo.lat, lng: day.geo.lng } : undefined;
+      // 那天的城市還沒定位（天氣頁還沒開過）：先定位城市，不然會用行程城市當中心、把別的城市的結果都當成太遠
+      if (!center && multiCity && day?.city?.trim()) center = await cityCenter(day.city);
+      center ??= near;
+      const other = it.place?.query ? queryCity(it.place.query, day?.city) : undefined;
+      if (other) center = (await cityCenter(other.display)) ?? center;
+      // 「名稱＋城市」：多城市行程用那天的城市；單一城市行程照舊用行程城市（cityHint）
+      const city = (multiCity && day?.city?.trim()) || tripCity;
       for (const q of placeQueries(it, city)) {
         const wait = lastAt + THROTTLE_MS - Date.now();
         if (wait > 0) await sleep(wait, signal);
         lastAt = Date.now();
-        const geo = await searchPlace(q, near, signal);
+        const geo = await searchPlace(q, center, signal);
         if (geo) {
           onResult(it.id, geo);
           ok++;

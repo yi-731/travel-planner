@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import readXlsxFile from 'read-excel-file/universal';
 import type { Expense, Item, Trip } from '@/domain/types';
-import { templateXlsx, tripToMyMapsCsv, tripToXlsx } from './exporter';
-import { interpretSheets, readSpreadsheetFile, type RawSheets } from './importer';
+import { itemRows, templateXlsx, tripToMyMapsCsv, tripToXlsx } from './exporter';
+import { applyImport, interpretSheets, readSpreadsheetFile, type RawSheets } from './importer';
 
 const now = 1;
 const item = (p: Partial<Item> & Pick<Item, 'title'>): Item => ({ id: p.title, date: null, type: 'other', done: false, createdAt: now, updatedAt: now, ...p });
@@ -96,6 +96,78 @@ describe('tripToXlsx', () => {
     const raw = await readBack(await tripToXlsx(mkTrip({ items: [], expenses: [] })));
     expect(raw['行程']).toHaveLength(1);
     expect(raw['記帳']).toHaveLength(1);
+  });
+});
+
+/* 多城市行程（合成資料，結構仿照真實的手排試算表）：匯出再匯入要留住每天的城市、★◇、分類、路線 */
+function multiCity(): Trip {
+  const D1 = '2026-12-03', D2 = '2026-12-04', D3 = '2026-12-05';
+  return mkTrip({
+    name: '美西北', city: 'SEATTLE', startDate: D1, endDate: D3, localCurrency: 'USD', expenses: [],
+    days: {
+      [D1]: { label: '台北 → 舊金山｜住 Hotel Zephyr', city: '舊金山', lodging: 'Hotel Zephyr', source: 'rule' },
+      [D2]: { label: '舊金山 → 西雅圖｜住 Maple Lodge｜音樂祭', city: '西雅圖', lodging: 'Maple Lodge', source: 'rule' },
+      // AI 判斷的日子沒有日期列原文：用城市＋住宿
+      [D3]: { city: '西雅圖', lodging: 'Maple Lodge', source: 'ai' },
+      __D9: { label: '溫哥華一日遊', source: 'rule' },
+    },
+    items: [
+      item({ title: '桃園機場 T1 報到', date: D1, time: '20:30', type: 'transport', tag: '機場', flag: 'must', address: 'TPE Terminal 1', seq: 0 }),
+      item({ title: 'BR018 起飛', date: D1, time: '23:55', type: 'transport', tag: '航班', flag: 'must', route: { from: 'TPE', to: 'SFO' }, seq: 1 }),
+      item({ title: '抵達 SFO', date: D1, time: '19:20', type: 'transport', tag: '航班', address: 'SFO International Terminal', seq: 2 }),
+      item({ title: 'Alaska SFO → SEA', date: D2, time: '10:40', type: 'transport', tag: '航班', flag: 'must', route: { from: 'SFO', to: 'SEA' }, seq: 3 }),
+      item({ title: '演唱會', date: D2, time: '19:30', type: 'sight', tag: '活動', transit: '看台', seq: 4 }),
+      item({ title: '宵夜', date: D2, time: '22:30', type: 'food', flag: 'optional', transit: '車程 8 分', seq: 5 }),
+      // 過了午夜：排在宵夜後面
+      item({ title: '回飯店', date: D2, time: '00:40', type: 'transport', transit: '回程', seq: 6 }),
+      item({ title: '玻璃工作坊', date: D3, time: '10:00', type: 'sight', tag: '體驗', address: '100 Main St', seq: 7 }),
+    ],
+  });
+}
+
+describe('匯出再匯入（多城市）', () => {
+  it('每天的日期列、★◇、分類、路線、交通說明都留著；順序照試算表', async () => {
+    const trip = multiCity();
+    const rows = itemRows(trip);
+    // 每天第一列是日期列（只有 A 欄）
+    expect(rows[0][0]).toMatchObject({ value: '2026/12/03（四）｜台北 → 舊金山｜住 Hotel Zephyr' });
+    expect(rows[0].slice(1).every((c) => c == null)).toBe(true);
+
+    const raw = await readBack(await tripToXlsx(trip));
+    const r = interpretSheets(raw, { name: '', startDate: null, localCurrency: 'USD' });
+    expect(r.days).toEqual({
+      '2026-12-03': { label: '台北 → 舊金山｜住 Hotel Zephyr', cities: ['台北', '舊金山'], city: '舊金山', lodging: 'Hotel Zephyr' },
+      '2026-12-04': { label: '舊金山 → 西雅圖｜住 Maple Lodge｜音樂祭', cities: ['舊金山', '西雅圖'], city: '西雅圖', lodging: 'Maple Lodge' },
+      '2026-12-05': { label: '西雅圖｜住 Maple Lodge', cities: ['西雅圖'], city: '西雅圖', lodging: 'Maple Lodge' },
+      __D9: { label: '溫哥華一日遊', cities: ['溫哥華'], city: '溫哥華' },
+    });
+    const by = (t: string) => r.items.find((i) => i.title === t)!;
+    expect(r.items.map((i) => i.title)).toEqual(['桃園機場 T1 報到', 'BR018 起飛', '抵達 SFO', 'Alaska SFO → SEA', '演唱會', '宵夜', '回飯店', '玻璃工作坊']);
+    expect(r.items.map((i) => i.flag ?? '')).toEqual(['must', 'must', '', 'must', '', 'optional', '', '']);
+    expect(by('BR018 起飛')).toMatchObject({ route: { from: 'TPE', to: 'SFO' }, tag: '航班', type: 'transport' });
+    expect(by('Alaska SFO → SEA').route).toEqual({ from: 'SFO', to: 'SEA' });
+    expect(by('宵夜')).toMatchObject({ transit: '車程 8 分', type: 'food' });
+    expect(by('演唱會')).toMatchObject({ transit: '看台', tag: '活動' });
+    expect(by('玻璃工作坊')).toMatchObject({ address: '100 Main St', tag: '體驗' });
+    expect(by('抵達 SFO').address).toBe('SFO International Terminal');
+
+    // 套用成新行程：每天的城市都在，行程城市用過夜最多天的城市
+    const t = applyImport(mkTrip({ name: '', city: '', startDate: null, endDate: null, items: [], expenses: [], localCurrency: 'USD' }), r, 'new');
+    expect(t.city).toBe('SEATTLE');
+    expect(t.days?.['2026-12-04']).toMatchObject({ city: '西雅圖', lodging: 'Maple Lodge' });
+    expect(t.items.filter((i) => i.flag).length).toBe(4);
+  });
+
+  it('Google 我的地圖 CSV：地址用導航目的地（含當天城市）；沒有特定地點的不放', () => {
+    const trip = mkTrip({
+      items: [
+        item({ title: '起床', date: '2026-11-21', time: '07:00', place: { query: 'Hotel Granvia, Kyoto, Japan', source: 'rule', navigable: false } }),
+        item({ title: '東大寺', date: '2026-11-21', time: '10:00', place: { query: '東大寺, Nara, Japan', source: 'rule' } }),
+      ],
+    });
+    const csv = tripToMyMapsCsv(trip);
+    expect(csv).toContain('東大寺,"東大寺, Nara, Japan",2026-11-21,10:00');
+    expect(csv).not.toContain('起床');
   });
 });
 

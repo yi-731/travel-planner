@@ -54,4 +54,51 @@ export function aiCostHint(model: string): string {
 }
 
 export const DEFAULT_AI_MODEL = 'claude-opus-5-5';
+
+/**
+ * Anthropic 官方單價（美元／每百萬 token），用來把每次回應的實際 token 數換成費用（services/ai.ts 的 usageCostUsd）。
+ * 設定頁可選的三個模型，加上伺服器端 refusal 備援可能改用的模型（Opus 5.5 → Opus 5 / Opus 4.8、Sonnet 5.5 → Sonnet 5）。
+ * 快取讀取按輸入單價的 10%、寫入 125% 計。Haiku 5.5 的提示超過 10 萬 token 時單價較高，本 App 的請求遠小於此，不另計。
+ * 改定價或換模型時一起更新（AI_MODELS 的 cost 文字也要改）。
+ */
+export const AI_PRICES: Record<string, { input: number; output: number }> = {
+  'claude-opus-5-5': { input: 4, output: 20 },
+  'claude-sonnet-5-5': { input: 2, output: 10 },
+  'claude-haiku-5-5': { input: 0.1, output: 0.5 },
+  'claude-opus-5': { input: 5, output: 25 },
+  'claude-opus-4-8': { input: 5, output: 25 },
+  'claude-sonnet-5': { input: 2, output: 10 },
+};
+export const AI_CACHE_READ_FACTOR = 0.1;
+export const AI_CACHE_WRITE_FACTOR = 1.25;
+/** 行程沒有美元匯率時，用這個匯率把 AI 費用換成新台幣 */
+export const USD_TWD_FALLBACK = 32;
+
+/** 每趟 AI 花費上限的選項（新台幣；0 = 不限制）；預設 200（store/data.ts 的 defaultSettings） */
+export const AI_BUDGET_CHOICES = [100, 200, 300, 500, 0];
+/** AI 地點辨識開始前，本趟剩餘額度至少要有這麼多（新台幣；一批 60 站最多約這個數） */
+export const AI_PLACES_MIN_TWD = 15;
+
+/** 各 AI 功能的名稱（AIUsage.byFeature 的 key → 顯示名稱） */
+export const AI_FEATURES = [
+  { key: 'places', label: '地點辨識', unit: '每 60 站' },
+  { key: 'dayCheck', label: '排程檢查', unit: '每天' },
+  { key: 'recommend', label: '景點推薦', unit: '每次' },
+  { key: 'packing', label: '穿搭建議', unit: '每次' },
+  { key: 'receipt', label: '收據辨識', unit: '每張' },
+] as const;
+export type AIFeature = (typeof AI_FEATURES)[number]['key'];
+export const aiFeatureLabel = (k: string) => AI_FEATURES.find((f) => f.key === k)?.label ?? k;
+
+/**
+ * 各功能一次請求大約用掉的 token（輸入；輸出含思考的低～高），設定頁依選到的模型換算成大約費用。
+ * 依實際請求量測：地點辨識一批 60 站的提示約 6K token，回覆加思考 6K–14K；其他功能的回覆都在 1K–6K。
+ */
+export const AI_FEATURE_TOKENS: Record<AIFeature, { input: number; output: [number, number] }> = {
+  places: { input: 6000, output: [6000, 14000] },
+  dayCheck: { input: 1500, output: [1500, 4500] },
+  recommend: { input: 2000, output: [2500, 6000] },
+  packing: { input: 1200, output: [1000, 2500] },
+  receipt: { input: 2000, output: [600, 1500] },
+};
 export const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];

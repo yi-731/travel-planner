@@ -1,13 +1,14 @@
 /**
- * 地圖下方的站點清單：編號與顏色和地圖標記一致。
+ * 地圖下方的站點清單：編號與顏色和地圖標記一致。第二行是導航目的地（含城市背景）。
  * 點一列 → 地圖移到那一站（沒有座標的開地點詳情）；右側導航鈕直接用 Google 地圖導航。
+ * 起床、整理這類沒有特定地點的：整列變淡、不放導航鈕。
  * 要用 Apple 地圖：點那一列 → 地圖上的小卡 → 地點詳情。
  */
 import { motion } from 'motion/react';
 import { haptic } from '@/platform';
 import { gmapsNavigate } from '@/services/links';
 import { Icon } from '@/ui';
-import { navQuery, stopAddress, type Stop } from './model';
+import { navQuery, stopPlace, type Stop } from './model';
 import s from './map.module.css';
 
 const cls = (...c: (string | false | undefined)[]) => c.filter(Boolean).join(' ');
@@ -31,12 +32,13 @@ export function StopList({ stops, selectedId, geoState, onPick, reduceMotion }: 
       {stops.map((st, k) => {
         const it = st.item;
         const q = navQuery(it);
-        const addr = stopAddress(it);
-        const status = st.geo ? null : STATUS[geoState];
+        const place = stopPlace(it);
+        const addr = place.text;
+        const status = st.geo || !place.navigable ? null : STATUS[geoState];
         return (
           <motion.li
             key={it.id}
-            className={cls(s.stop, it.done && s.isDone, selectedId === it.id && s.isSel, !st.geo && s.noGeo)}
+            className={cls(s.stop, it.done && s.isDone, selectedId === it.id && s.isSel, !st.geo && s.noGeo, !place.navigable && s.noNav)}
             initial={reduceMotion ? false : { opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.24, delay: Math.min(k, 8) * 0.025, ease: [0.2, 0.8, 0.2, 1] }}
@@ -59,17 +61,21 @@ export function StopList({ stops, selectedId, geoState, onPick, reduceMotion }: 
                 {(it.time || addr || status) && (
                   <span className={s.stopSub}>
                     {it.time && <b className="num">{it.time}</b>}
-                    {addr && <span className={s.addr}>{addr}</span>}
+                    {addr && <span className={cls(s.addr, !place.navigable && s.addrNone)}>{addr}</span>}
                     {status && <span className={cls(s.status, geoState !== 'done' && s.statusPending)}>{status}</span>}
                   </span>
                 )}
               </span>
             </button>
-            <a className={s.nav} href={gmapsNavigate(q)} target="_blank" rel="noopener noreferrer" aria-label={`用 Google 地圖導航到「${it.title}」`} onClick={() => void haptic('light')}>
-              <span>
-                <Icon name="navigate" size={16} stroke={2.2} />
-              </span>
-            </a>
+            {place.navigable ? (
+              <a className={s.nav} href={gmapsNavigate(q)} target="_blank" rel="noopener noreferrer" aria-label={`用 Google 地圖導航到「${it.title}」`} onClick={() => void haptic('light')}>
+                <span>
+                  <Icon name="navigate" size={16} stroke={2.2} />
+                </span>
+              </a>
+            ) : (
+              <span className={s.navNone} aria-hidden />
+            )}
           </motion.li>
         );
       })}

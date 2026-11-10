@@ -4,10 +4,11 @@
  */
 import { fmtMD, toMinutes, weekday, type TripPhase } from '@/domain/dates';
 import { totalHome, dayTotalHome } from '@/domain/money';
-import type { SegmentInfo } from '@/domain/schedule';
+import { dayClock, type SegmentInfo } from '@/domain/schedule';
 import type { ISODate, Item, Trip } from '@/domain/types';
 import type { IconName } from '@/ui/Icon';
-import { weatherInfo } from '@/services/weather';
+import { sameCityName } from '@/features/weather/model';
+import { findCityAlias, weatherInfo } from '@/services/weather';
 
 /** 中日韓文字（決定城市名用襯線大字或系統粗體） */
 const CJK = /[぀-ヿ㐀-鿿豈-﫿가-힯]/;
@@ -16,16 +17,20 @@ export const hasCJK = (s: string) => CJK.test(s);
 /** 11/21（週六） */
 export const fmtMDWeek = (d: ISODate) => `${fmtMD(d)}（週${weekday(d)}）`;
 
-/** 城市名上方的一行小字 */
-export function eyebrowText(p: TripPhase): string {
+/** 城市名上方的一行小字；旅途中加上當天所在的城市（多城市行程：「DAY 2 / 5 · 3/9（週二）· 波特蘭」） */
+export function eyebrowText(p: TripPhase, city?: string): string {
   switch (p.phase) {
     case 'none':
       return '尚未設定日期';
     case 'before':
       // 倒數天數放在「倒數」小卡（大字），這裡只說哪天出發，不重複
       return `${fmtMDWeek(p.focusDay)}出發`;
-    case 'during':
-      return `DAY ${p.dayIndex + 1} / ${p.days.length} · ${fmtMDWeek(p.focusDay)}`;
+    case 'during': {
+      const head = `DAY ${p.dayIndex + 1} / ${p.days.length} · ${fmtMDWeek(p.focusDay)}`;
+      const c = city?.trim();
+      // 全形括號後面本身有留白，「·」前不再加空格
+      return c ? `${head}· ${c}` : head;
+    }
     case 'after':
       return '旅程已結束';
   }
@@ -33,6 +38,44 @@ export function eyebrowText(p: TripPhase): string {
 
 /** 首頁大字：城市名，沒有就用行程名稱 */
 export const displayCity = (trip: Pick<Trip, 'city' | 'name'>) => trip.city.trim() || trip.name.trim() || '我的旅程';
+
+/**
+ * 首頁大字實際顯示的城市：平常是行程城市；旅途中當天在別的城市（多城市行程），就顯示當天的城市——那是使用者今天人在的地方。
+ * 行程城市寫英文（PORTLAND）時，當天城市也盡量用英文，大字風格才一致。
+ */
+export function heroCity(trip: Pick<Trip, 'city' | 'name'>, dayCity: string | undefined | null, phase: TripPhase['phase']): string {
+  const base = displayCity(trip);
+  const day = dayCity?.trim();
+  if (phase !== 'during' || !day) return base;
+  const tc = trip.city.trim();
+  if (tc && sameCityName(tc, day)) return base;
+  if (tc && !hasCJK(tc) && hasCJK(day)) return findCityAlias(day)?.en ?? day;
+  return day;
+}
+
+/**
+ * 標題列小字要加的地點：移動日寫路線（「西雅圖 → 波特蘭」），其他日子寫當天城市；
+ * 和大字一模一樣時不重複。bannerCities：日期列依序提到的城市（parseDayBanner）。
+ */
+export function eyebrowPlace(bannerCities: string[] | undefined, dayCity: string | undefined | null, hero: string): string {
+  const route = (bannerCities ?? []).map((c) => c.trim()).filter(Boolean);
+  if (route.length >= 2) return route.slice(0, 3).join(' → ');
+  const c = dayCity?.trim();
+  if (!c) return '';
+  return c.normalize('NFKC').toLowerCase() === hero.trim().normalize('NFKC').toLowerCase() ? '' : c;
+}
+
+/** 這趟行程有沒有超過一個城市（多城市行程才在天氣小卡寫出城市） */
+export function isMultiCity(trip: Pick<Trip, 'days'>): boolean {
+  const first: string[] = [];
+  for (const m of Object.values(trip.days ?? {})) {
+    const c = m?.city?.trim();
+    if (!c) continue;
+    if (!first.length) first.push(c);
+    else if (!sameCityName(first[0], c)) return true;
+  }
+  return false;
+}
 
 /**
  * 依字數算城市名要縮到多小才放得下（單位：字數）。
@@ -61,9 +104,12 @@ export interface NextStop {
 export function pickNextStop(phase: TripPhase['phase'], dayItems: Item[], nowMin: number): NextStop | null {
   if (phase === 'before') return dayItems[0] ? { item: dayItems[0], status: 'first' } : null;
   if (phase !== 'during') return null;
+  // 晚上行程後面的「0:45」是過了午夜（24:45），還沒過
+  const clock = dayClock(dayItems);
+  const minutesOf = new Map(dayItems.map((it, k) => [it.id, clock[k].minutes]));
   const open = dayItems.filter((i) => !i.done);
   for (const it of open) {
-    const t = toMinutes(it.time);
+    const t = minutesOf.get(it.id) ?? toMinutes(it.time);
     if (t == null) continue;
     const end = t + (it.durationMin ?? 0);
     if (end >= nowMin) return { item: it, status: t <= nowMin && it.durationMin ? 'now' : 'next' };
@@ -124,9 +170,9 @@ export const showHomeTiles = (phase: TripPhase['phase']) => phase !== 'after';
  * 旅途中「時間已過但還沒打勾」的行程點：開始時間＋停留時間已早於現在（與 pickNextStop 的結束規則相同）。
  * 主卡正在顯示的那一站不算（所有站都過了時，主卡會退回第一個沒完成的）。
  */
-export function isPastStop(item: Pick<Item, 'time' | 'durationMin' | 'done'>, nowMin: number): boolean {
+export function isPastStop(item: Pick<Item, 'time' | 'durationMin' | 'done'>, nowMin: number, minutes?: number | null): boolean {
   if (item.done) return false;
-  const t = toMinutes(item.time);
+  const t = minutes ?? toMinutes(item.time);
   return t != null && t + (item.durationMin ?? 0) < nowMin;
 }
 
@@ -187,6 +233,27 @@ export function weatherSub(label: string, kind: 'forecast' | 'climate', maxChars
   if (!label) return tag;
   if (label.length + tag.length <= maxChars) return `${label} · ${tag}`;
   return kind === 'climate' ? tag : label;
+}
+
+/** 小卡文字的大約寬度（以中文字為 1；英數約半個字；「 · 」約一個字） */
+const textWidth = (s: string) => [...s].reduce((w, ch) => w + (CJK.test(ch) || /[（）、，]/.test(ch) ? 1 : ch === '·' ? 0.4 : 0.55), 0);
+
+/**
+ * 多城市行程的天氣小卡副標：寫出這天的城市（「波特蘭 · 晴」）；放不下時只留城市。
+ * 歷年平均一定要講清楚：放不下「城市 · 歷年平均」就退成「城市 · 平均」，再放不下只寫「歷年平均」。
+ * 沒有城市時同 weatherSub。
+ */
+export function weatherTileSub(city: string | undefined | null, label: string, kind: 'forecast' | 'climate', maxWidth = 7.5): string {
+  const c = city?.trim();
+  if (!c) return weatherSub(label, kind);
+  const fits = (s: string) => textWidth(s) <= maxWidth;
+  if (kind === 'climate') {
+    if (fits(`${c} · 歷年平均`)) return `${c} · 歷年平均`;
+    if (fits(`${c} · 平均`)) return `${c} · 平均`;
+    return '歷年平均';
+  }
+  if (label && fits(`${c} · ${label}`)) return `${c} · ${label}`;
+  return c;
 }
 
 /** 數字越長字越小，避免小卡裡被截斷 */

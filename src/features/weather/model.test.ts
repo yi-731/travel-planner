@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { barInset, fmtUpdated, rainLong, rainText, tempScale } from './model';
+import { barInset, citiesText, distinctCities, fmtUpdated, groupByCity, rainLong, rainText, sameCityName, tempScale } from './model';
 
 describe('tempScale', () => {
   it('spans min..max across days', () => {
@@ -48,5 +48,30 @@ describe('fmtUpdated', () => {
     const now = new Date(2026, 10, 9, 18, 0);
     expect(fmtUpdated(new Date(2026, 10, 9, 9, 5).getTime(), now)).toBe('09:05');
     expect(fmtUpdated(new Date(2026, 10, 8, 21, 40).getTime(), now)).toBe('11/8 21:40');
+  });
+});
+
+describe('多城市', () => {
+  it('同一個城市的不同寫法算同一個', () => {
+    expect(sameCityName('波特蘭', 'Portland')).toBe(true);
+    expect(sameCityName('PORTLAND', 'portland')).toBe(true);
+    expect(sameCityName('西雅圖', '波特蘭')).toBe(false);
+    expect(sameCityName('', '')).toBe(false);
+    expect(distinctCities(['西雅圖', 'Seattle', ' ', undefined, '波特蘭'])).toEqual(['西雅圖', '波特蘭']);
+  });
+  it('依連續的城市分段，不知道城市的日子併進前一段', () => {
+    const city: Record<string, string | undefined> = { a: '西雅圖', b: 'Portland', c: undefined, d: '波特蘭', e: '西雅圖' };
+    expect(groupByCity(['a', 'b', 'c', 'd', 'e'], (d) => city[d])).toEqual([
+      { city: '西雅圖', dates: ['a'] },
+      { city: 'Portland', dates: ['b', 'c', 'd'] },
+      { city: '西雅圖', dates: ['e'] },
+    ]);
+    expect(groupByCity(['x', 'y'], (d) => (d === 'y' ? '京都' : undefined))).toEqual([{ city: '京都', dates: ['x', 'y'] }]);
+    expect(groupByCity([], () => 'x')).toEqual([]);
+  });
+  it('標題列的城市清單', () => {
+    expect(citiesText(['西雅圖', '波特蘭', '西雅圖'])).toBe('西雅圖、波特蘭');
+    expect(citiesText(['西雅圖', '波特蘭', '溫哥華'])).toBe('西雅圖 等 3 個城市');
+    expect(citiesText([])).toBe('');
   });
 });

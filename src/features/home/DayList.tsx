@@ -1,6 +1,7 @@
 import { motion, useReducedMotion } from 'motion/react';
 import { cssVar, itemType } from '@/domain/constants';
 import type { Item } from '@/domain/types';
+import { dayClock } from '@/domain/schedule';
 import { haptic } from '@/platform';
 import { useUI } from '@/store/ui';
 import { Icon } from '@/ui';
@@ -29,6 +30,8 @@ export function DayList({ title, items, nextId, during = false, nowMin = 0, onSh
   const reduce = useReducedMotion();
   const shown = items.slice(0, MAX_ROWS);
   const rest = items.length - shown.length;
+  // 過了午夜的「0:45」（排在晚上行程後面）算 24:45，晚上還不會變成「已過」
+  const clock = dayClock(items);
 
   return (
     <section className={s.section} aria-label={title}>
@@ -50,7 +53,7 @@ export function DayList({ title, items, nextId, during = false, nowMin = 0, onSh
         {shown.map((it, i) => {
           const type = itemType(it.type);
           const isNext = it.id === nextId;
-          const isPast = during && !isNext && isPastStop(it, nowMin);
+          const isPast = during && !isNext && isPastStop(it, nowMin, clock[i]?.minutes);
           return (
             <motion.button
               key={it.id}

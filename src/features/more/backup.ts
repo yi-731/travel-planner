@@ -13,15 +13,19 @@ import { parseISODate, toISODate } from '@/domain/dates';
 import { uid } from '@/domain/ids';
 import { sanitizeRates } from '@/domain/money';
 import type {
+  AIUsage,
   DailyWeather,
   DayCheck,
+  DayMeta,
   Expense,
   ExpenseCategory,
+  ISODate,
   Item,
   ItemType,
   LatLng,
   SegmentEstimate,
   Settings,
+  ThemePref,
   Trip,
   TripCover,
   WeatherCache,
@@ -105,6 +109,30 @@ const ITEM_TYPES: ItemType[] = ['sight', 'food', 'transport', 'stay', 'shop', 'o
 const CATEGORIES: ExpenseCategory[] = ['food', 'transport', 'stay', 'ticket', 'shop', 'other'];
 const GEO_SOURCES = ['geocode', 'link', 'manual'] as const;
 type GeoSource = (typeof GEO_SOURCES)[number];
+/** 地點辨識的來源（Item.place.source、DayMeta.source） */
+const PLACE_SOURCES = ['rule', 'ai', 'manual'] as const;
+type PlaceSource = (typeof PLACE_SOURCES)[number];
+const placeSource = (v: unknown): PlaceSource | undefined => (PLACE_SOURCES.includes(v as PlaceSource) ? (v as PlaceSource) : undefined);
+/** 0 以上的整數（次數、token 數） */
+const count = (v: unknown): number | undefined => (nonNeg(v) != null ? Math.round(v as number) : undefined);
+
+/** 導航目的地：查詢字是有內容的字串才算；來源不認得的當成規則版（之後會被重新辨識） */
+function normalizePlace(v: unknown): Item['place'] {
+  if (!isObj(v) || typeof v.query !== 'string' || !v.query.trim()) return undefined;
+  const name = optStr(v.name);
+  return {
+    query: v.query,
+    ...(name ? { name } : {}),
+    source: placeSource(v.source) ?? 'rule',
+    ...(typeof v.navigable === 'boolean' ? { navigable: v.navigable } : {}),
+  };
+}
+
+/** 交通起訖：起點、終點都是字串，至少一個有內容 */
+function normalizeRoute(v: unknown): Item['route'] {
+  if (!isObj(v) || typeof v.from !== 'string' || typeof v.to !== 'string') return undefined;
+  return v.from.trim() || v.to.trim() ? { from: v.from, to: v.to } : undefined;
+}
 
 /**
  * 每個欄位一個整理函式：型別不對就丟掉（選填）或補預設值（必填），不會把原始物件整個展開進來。
@@ -155,6 +183,12 @@ const ITEM_FIELDS: Fields<Item, ItemCtx> = {
   rating: num,
   note: anyStr,
   link: anyStr,
+  place: normalizePlace,
+  route: normalizeRoute,
+  flag: (v) => (v === 'must' || v === 'optional' ? v : undefined),
+  tag: optStr,
+  transit: optStr,
+  seq: num,
   done: (v) => v === true,
   createdAt: (v, c) => num(v) ?? c.now,
   updatedAt: (v, c) => num(v) ?? c.now,
@@ -218,6 +252,25 @@ const PACKING_FIELDS: Fields<Packing, Ctx> = {
   tips: strList,
 };
 
+/** 功能名稱（AIUsage.byFeature 的 key）：英數字開頭、最多 32 字，其他略過 */
+const FEATURE_KEY = /^[A-Za-z][\w-]{0,31}$/;
+
+const USAGE_FIELDS: Fields<AIUsage, Ctx> = {
+  costTwd: (v) => nonNeg(v) ?? 0,
+  calls: (v) => count(v) ?? 0,
+  inputTokens: (v) => count(v) ?? 0,
+  outputTokens: (v) => count(v) ?? 0,
+  byFeature: (v) => {
+    const out: Record<string, number> = {};
+    if (!isObj(v)) return out;
+    for (const [k, n] of Object.entries(v)) if (FEATURE_KEY.test(k) && nonNeg(n) != null) out[k] = n as number;
+    return out;
+  },
+};
+
+/** AI 用量：不是物件就丟掉（等於從 0 開始算）；數字壞掉的欄位補 0 */
+const normalizeUsage = (v: unknown, c: Ctx): AIUsage | undefined => (isObj(v) ? build(v, USAGE_FIELDS, c) : undefined);
+
 const AI_FIELDS: Fields<Trip['ai'], Ctx> = {
   dayChecks: (v, c) => {
     const out: Trip['ai']['dayChecks'] = {};
@@ -229,7 +282,39 @@ const AI_FIELDS: Fields<Trip['ai'], Ctx> = {
     return out;
   },
   packing: (v, c) => (isObj(v) && typeof v.text === 'string' && Array.isArray(v.tips) ? build(v, PACKING_FIELDS, c) : undefined),
+  usage: normalizeUsage,
+  placesResolvedAt: (v) => positive(v),
 };
+
+type DayGeo = NonNullable<DayMeta['geo']>;
+const DAY_GEO_FIELDS: Fields<DayGeo, Ctx> = {
+  lat: num,
+  lng: num,
+  label: optStr,
+  en: optStr,
+  admin1: optStr,
+  timezone: optStr,
+  countryCode: optStr,
+};
+
+const DAY_FIELDS: Fields<DayMeta, Ctx> = {
+  label: anyStr,
+  city: anyStr,
+  lodging: anyStr,
+  geo: (v, c) => (latLng(v) ? build(v as Obj, DAY_GEO_FIELDS, c) : undefined),
+  source: placeSource,
+};
+
+/** 「第 N 天」的日期列在還沒有出發日時的 key（見 services/importer.ts 的 relDayKey） */
+const REL_DAY_KEY = /^__D\d{1,3}$/;
+
+/** 每天的城市／住宿：key 要是真的日期（或還沒換算的「第 N 天」__D3），內容不是物件的略過 */
+function normalizeDays(v: unknown, c: Ctx): Record<ISODate, DayMeta> | undefined {
+  if (!isObj(v)) return undefined;
+  const out: Record<ISODate, DayMeta> = {};
+  for (const [date, m] of Object.entries(v)) if ((isoDate(date) || REL_DAY_KEY.test(date)) && isObj(m)) out[date] = build(m, DAY_FIELDS, c);
+  return out;
+}
 
 const DAILY_FIELDS: Fields<DailyWeather, Ctx> = {
   date: (v) => isoDate(v) ?? undefined,
@@ -241,6 +326,7 @@ const DAILY_FIELDS: Fields<DailyWeather, Ctx> = {
   sunrise: hhmm,
   sunset: hhmm,
   kind: (v) => (v === 'forecast' || v === 'climate' ? v : undefined),
+  place: optStr,
 };
 
 /** 天氣快取（只有整理手機裡的資料時保留；備份檔不含天氣） */
@@ -251,7 +337,8 @@ function normalizeWeather(raw: unknown, ctx: Ctx): WeatherCache | undefined {
     .filter((d): d is Obj => isObj(d))
     .map((d) => build(d, DAILY_FIELDS, ctx))
     .filter((d) => d.date && d.code != null && d.tMax != null && d.tMin != null && d.kind);
-  return { fetchedAt: raw.fetchedAt as number, ...p, days };
+  const locKey = optStr(raw.locKey);
+  return { fetchedAt: raw.fetchedAt as number, ...p, days, ...(locKey ? { locKey } : {}) };
 }
 
 type CityGeo = NonNullable<Trip['cityGeo']>;
@@ -306,6 +393,7 @@ const TRIP_FIELDS: Fields<Trip, TripCtx> = {
   sheetSyncedAt: num,
   cover: (v, c) => normalizeCover(v, c),
   ai: (v, c) => build(isObj(v) ? v : {}, AI_FIELDS, c),
+  days: normalizeDays,
   weather: (v, c) => (c.heal ? normalizeWeather(v, c) : undefined),
   isExample: (v) => (v === true ? true : undefined),
   createdAt: (v, c) => num(v) ?? c.now,
@@ -402,6 +490,31 @@ export function parseBackup(text: string, now: number = Date.now()): ParsedBacku
   if (!trips.length) throw new BackupError('備份檔裡沒有可以還原的行程。');
   const at = typeof data.exportedAt === 'string' ? Date.parse(data.exportedAt) : NaN;
   return { trips, exportedAt: Number.isFinite(at) ? at : null, skipped };
+}
+
+const THEMES: ThemePref[] = ['system', 'light', 'dark'];
+const bool = (v: unknown, fallback: boolean) => (typeof v === 'boolean' ? v : fallback);
+
+const SETTINGS_FIELDS: Fields<Settings, { d: Settings }> = {
+  theme: (v, c) => (THEMES.includes(v as ThemePref) ? (v as ThemePref) : c.d.theme),
+  anthropicApiKey: (v, c) => (typeof v === 'string' ? v : c.d.anthropicApiKey),
+  aiModel: (v, c) => optStr(v) ?? c.d.aiModel,
+  haptics: (v, c) => bool(v, c.d.haptics),
+  reminders: (v, c) => bool(v, c.d.reminders),
+  reminderLeadMin: (v, c) => (positive(v) != null && (v as number) <= 24 * 60 ? Math.round(v as number) : c.d.reminderLeadMin),
+  defaultHomeCurrency: (v, c) => code3(v, c.d.defaultHomeCurrency),
+  lastBackupAt: positive,
+  // 0 = 不限制；負數、非數字、大得離譜的值改回預設
+  aiTripBudgetTwd: (v, c) => (nonNeg(v) != null && (v as number) <= 100_000 ? Math.round(v as number) : c.d.aiTripBudgetTwd),
+  aiAutoResolvePlaces: (v, c) => bool(v, c.d.aiAutoResolvePlaces),
+};
+
+/**
+ * 設定整理（啟動時讀手機裡存的設定用）：缺少或型別不對的欄位用 defaults 補上，不認得的欄位丟掉。
+ * 型別要求列出 Settings 的所有欄位：新增設定卻沒在這裡處理時會編譯失敗。
+ */
+export function healSettings(raw: unknown, defaults: Settings): Settings {
+  return build(isObj(raw) ? raw : {}, SETTINGS_FIELDS, { d: defaults });
 }
 
 /** 還原前的摘要：幾個是新的、幾個會取代手機上同一個行程 */

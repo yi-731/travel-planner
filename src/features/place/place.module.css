@@ -59,6 +59,7 @@
   white-space: nowrap;
 }
 .wxTag { font-size: 10px; color: var(--muted); font-weight: 600; }
+.wxPlace { color: var(--ink); max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- 四個動作 ---------- */
 .actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; min-width: 0; }
@@ -95,11 +96,16 @@
 .warn .actionLabel { color: var(--warn); }
 .actionLabel { font-size: var(--fs-sm); font-weight: 600; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 
+/* 沒有特定地點時，動作列下方的說明 */
+.noNav { margin: -4px 0 0; padding: 0 6px; font-size: var(--fs-xs); line-height: 1.5; color: var(--muted); font-weight: 600; }
+
 /* ---------- 資訊清單 ---------- */
+.factsWrap { display: grid; gap: 12px; min-width: 0; }
 .facts { margin: 0; background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-1); overflow: hidden; }
 .fact { position: relative; padding: 12px 16px 13px; display: grid; gap: 2px; min-width: 0; }
 .fact + .fact::before { content: ''; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--line); }
-.factLabel { font-size: var(--fs-xs); font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+.factLabel { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+.srcBadge { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; line-height: 1; padding: 3px 7px; border-radius: var(--r-pill); color: var(--ink-2); background: var(--surface-3); }
 .factValue { margin: 0; display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 24px; }
 .factText { flex: 1; min-width: 0; font-size: var(--fs-md); line-height: 1.45; color: var(--ink); overflow-wrap: anywhere; }
 .selectable { -webkit-user-select: text; user-select: text; }
@@ -128,6 +134,18 @@
 }
 .factBtn::after { content: ''; position: absolute; inset: -6px -4px; }
 .factBtn:active { transform: scale(0.95); }
+.factBtn:disabled { opacity: 0.45; }
+.factBtns { flex: none; display: inline-flex; gap: 8px; }
+.factBtnGo { background: var(--sel-bg); color: var(--sel-ink); }
+
+/* 導航目的地的就地編輯 */
+.destEdit { display: grid; gap: 8px; min-width: 0; padding: 4px 0 2px; }
+.destInput { width: 100%; min-height: 44px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-strong); color: var(--ink); font: inherit; font-size: 16px; }
+.destInput:focus { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+.destHint { font-size: var(--fs-xs); line-height: 1.45; color: var(--muted); }
+.destBtns { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+.destSpacer { flex: 1; }
+.destLink { min-height: 44px; padding: 0 2px; font-size: var(--fs-sm); font-weight: 600; color: var(--accent-text); }
 .rating { display: inline-flex; align-items: center; gap: 8px; }
 .stars {
   position: relative;

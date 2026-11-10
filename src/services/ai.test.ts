@@ -3,9 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { Item, Trip } from '@/domain/types';
 
-// 不連真正的 API：設定從假的 store 讀，網路用假的 fetch
-const settings = { anthropicApiKey: '', aiModel: 'claude-opus-5-5' };
-vi.mock('@/store/data', () => ({ useData: { getState: () => ({ settings }) } }));
+// 不連真正的 API：設定與行程從假的 store 讀，網路用假的 fetch
+const settings: { anthropicApiKey: string; aiModel: string; aiTripBudgetTwd?: number } = { anthropicApiKey: '', aiModel: 'claude-opus-5-5' };
+const trips: Record<string, Trip> = {};
+const mutateTrip = vi.fn((id: string, fn: (d: Trip) => void) => {
+  if (!trips[id]) return;
+  const d = structuredClone(trips[id]);
+  fn(d);
+  trips[id] = d;
+});
+vi.mock('@/store/data', () => ({ useData: { getState: () => ({ settings, trips, mutateTrip }) } }));
 // 大於 4 KB 的「照片」回傳超過 API 上限的 base64
 vi.mock('@/platform', () => ({ blobToBase64: async (b: Blob) => (b.size > 4096 ? 'A'.repeat(5 * 1024 * 1024 + 4) : 'QUJD') }));
 
@@ -318,7 +325,8 @@ describe('完整流程（假的 fetch）', () => {
       }
       ev.push(['content_block_stop', { type: 'content_block_stop', index }]);
     });
-    ev.push(['message_delta', { type: 'message_delta', delta: { stop_reason: msg.stop_reason, stop_sequence: null }, usage: { output_tokens: 1 } }]);
+    const u = (msg.usage ?? {}) as Record<string, unknown>;
+    ev.push(['message_delta', { type: 'message_delta', delta: { stop_reason: msg.stop_reason, stop_sequence: null }, usage: { ...u, output_tokens: u.output_tokens ?? 1 } }]);
     ev.push(['message_stop', { type: 'message_stop' }]);
     return ev.map(([e, d]) => `event: ${e}\ndata: ${JSON.stringify(d)}\n\n`).join('');
   }
@@ -433,13 +441,33 @@ describe('完整流程（假的 fetch）', () => {
           return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
         }),
       );
-      const p = ai.recommendPlaces(mkTrip(day), '2026-11-21', '');
+      const t = mkTrip(day);
+      trips[t.id] = t;
+      const p = ai.recommendPlaces(t, '2026-11-21', '');
       const done = expect(p).rejects.toMatchObject({ code: 'network', message: expect.stringContaining('太久') });
       await vi.advanceTimersByTimeAsync(301_000);
       await done;
       expect(calls).toHaveLength(1); // 已經開始生成的請求不會被重送
+      // 已經生成了 5 分鐘才逾時：照樣會被計費，用量照估計記下（輸出最多算到 max_tokens），本趟預算才不會少算
+      const u = trips[t.id].ai.usage!;
+      expect(u.calls).toBe(1);
+      expect(u.outputTokens).toBe(16_000);
+      expect(u.byFeature.recommend).toBeGreaterThan(0);
     } finally {
+      delete trips['t1'];
       vi.useRealTimers();
+    }
+  });
+
+  it('還沒開始生成就失敗（連不上、伺服器錯誤）：不記用量', async () => {
+    const t = mkTrip(day);
+    trips[t.id] = t;
+    try {
+      mockApi(() => ({ status: 400, json: { type: 'error', error: { type: 'invalid_request_error', message: 'bad' } } }));
+      await expect(ai.recommendPlaces(t, '2026-11-21', '')).rejects.toBeInstanceOf(AIError);
+      expect(trips[t.id].ai.usage).toBeUndefined();
+    } finally {
+      delete trips['t1'];
     }
   });
 
@@ -493,5 +521,396 @@ describe('完整流程（假的 fetch）', () => {
     const ctrl = new AbortController();
     ctrl.abort();
     await expect(ai.recommendPlaces(mkTrip(day), '2026-11-21', '', ctrl.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 用量、費用與預算                                                      */
+/* ------------------------------------------------------------------ */
+
+describe('中途失敗的用量估計（partialUsage）', () => {
+  it('沒有開始生成：不記；開始了：輸入照回報，輸出取回報值與經過時間估計的較大者，最多 max_tokens', () => {
+    expect(ai.partialUsage(null, 1000, 20_000, 9000)).toBeNull();
+    expect(ai.partialUsage({ input_tokens: 5000, output_tokens: 1 }, 0, 20_000, 10_000)).toEqual({ input_tokens: 5000, output_tokens: 800 });
+    expect(ai.partialUsage({ input_tokens: 5000, output_tokens: 1 }, 0, 20_000, 1_000_000)).toMatchObject({ output_tokens: 20_000 });
+    // 已經收到 message_delta（完整用量）才斷線：用回報的
+    expect(ai.partialUsage({ input_tokens: 5000, output_tokens: 3000 }, 0, 20_000, 1000)).toMatchObject({ output_tokens: 3000 });
+    expect(ai.partialUsage({ input_tokens: 5000, output_tokens: 1 }, null, 20_000, 1000)).toMatchObject({ output_tokens: 1 });
+  });
+});
+
+describe('費用計算', () => {
+  it('依模型單價（每百萬 token）計算，快取讀取按輸入的 10%', () => {
+    expect(ai.usageCostUsd('claude-opus-5-5', { input_tokens: 1_000_000, output_tokens: 0 }).usd).toBeCloseTo(4);
+    expect(ai.usageCostUsd('claude-opus-5-5', { input_tokens: 0, output_tokens: 1_000_000 }).usd).toBeCloseTo(20);
+    expect(ai.usageCostUsd('claude-sonnet-5-5', { input_tokens: 1_000_000, output_tokens: 1_000_000 }).usd).toBeCloseTo(12);
+    expect(ai.usageCostUsd('claude-haiku-5-5', { input_tokens: 1_000_000, output_tokens: 1_000_000 }).usd).toBeCloseTo(0.6);
+    const c = ai.usageCostUsd('claude-opus-5-5', { input_tokens: 1000, cache_read_input_tokens: 10_000, output_tokens: 2000 });
+    expect(c.usd).toBeCloseTo((1000 * 4 + 10_000 * 0.4 + 2000 * 20) / 1e6);
+    expect(c.inputTokens).toBe(11_000);
+    expect(c.outputTokens).toBe(2000);
+  });
+
+  it('缺欄位、null、負數都當 0；不認得的模型用預設模型的單價', () => {
+    expect(ai.usageCostUsd('claude-opus-5-5', null)).toEqual({ usd: 0, inputTokens: 0, outputTokens: 0 });
+    expect(ai.usageCostUsd('claude-opus-5-5', { input_tokens: -5, output_tokens: null }).usd).toBe(0);
+    expect(ai.usageCostUsd('weird-model', { output_tokens: 1_000_000 }).usd).toBeCloseTo(20);
+  });
+
+  it('有 iterations 時以它為準（備援重跑分開計），每筆用要求的模型與實際模型較貴的單價', () => {
+    const usage = {
+      input_tokens: 500,
+      output_tokens: 1000, // 頂層只算最後一次（備援），不能只看它
+      iterations: [
+        { type: 'message', model: 'claude-opus-5-5', input_tokens: 500, output_tokens: 300, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        { type: 'fallback_message', model: 'claude-opus-5', input_tokens: 500, output_tokens: 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      ],
+    };
+    const c = ai.usageCostUsd('claude-opus-5-5', usage);
+    expect(c.usd).toBeCloseTo((500 * 4 + 300 * 20 + 500 * 5 + 1000 * 25) / 1e6);
+    expect(c.inputTokens).toBe(1000);
+    expect(c.outputTokens).toBe(1300);
+    // 備援到比較便宜（或不認得）的模型：仍用要求的模型計
+    const s = ai.usageCostUsd('claude-sonnet-5-5', { iterations: [{ type: 'fallback_message', model: 'claude-x', input_tokens: 0, output_tokens: 1_000_000 }] });
+    expect(s.usd).toBeCloseTo(10);
+  });
+
+  it('美元換新台幣：用行程匯率，不合理或沒有時用 32', () => {
+    const base = { homeCurrency: 'TWD', localCurrency: 'JPY', rate: 0.21 };
+    expect(ai.usdToTwd({ ...base, rates: { USD: 31.2 } })).toBeCloseTo(31.2);
+    expect(ai.usdToTwd(base)).toBe(32);
+    // 當地貨幣是美元，但還沒抓到匯率（rate = 1）
+    expect(ai.usdToTwd({ homeCurrency: 'TWD', localCurrency: 'USD', rate: 1 })).toBe(32);
+    expect(ai.usdToTwd({ homeCurrency: 'TWD', localCurrency: 'USD', rate: 30.8 })).toBeCloseTo(30.8);
+    // 本國貨幣不是台幣：兩個匯率相除
+    expect(ai.usdToTwd({ homeCurrency: 'JPY', localCurrency: 'KRW', rate: 0.11, rates: { USD: 150, TWD: 4.8 } })).toBeCloseTo(31.25);
+  });
+
+  it('累計用量：依功能加總，不修改原物件', () => {
+    const a = ai.addUsage(undefined, 'places', 6.2, 6000, 9000);
+    const b = ai.addUsage(a, 'dayCheck', 1.5, 1500, 2000);
+    const c = ai.addUsage(b, 'places', 0.3, 100, 100);
+    expect(a).toEqual({ costTwd: 6.2, calls: 1, inputTokens: 6000, outputTokens: 9000, byFeature: { places: 6.2 } });
+    expect(c.costTwd).toBeCloseTo(8);
+    expect(c.calls).toBe(3);
+    expect(c.byFeature).toEqual({ places: 6.5, dayCheck: 1.5 });
+    expect(b.byFeature.places).toBe(6.2);
+    expect(ai.addUsage(a, 'x', Number.NaN, 0, 0).costTwd).toBe(6.2);
+  });
+
+  it('設定頁的大約費用：Opus 地點辨識約 NT$5–10，Haiku 不到 NT$1', () => {
+    const [lo, hi] = ai.estimateFeatureTwd('claude-opus-5-5', 'places');
+    expect(Math.round(lo)).toBeGreaterThanOrEqual(4);
+    expect(Math.round(hi)).toBeLessThanOrEqual(11);
+    expect(ai.estimateFeatureTwd('claude-haiku-5-5', 'places')[1]).toBeLessThan(1);
+    const [s1, s2] = ai.estimateFeatureTwd('claude-sonnet-5-5', 'dayCheck');
+    expect(s2).toBeGreaterThan(s1);
+  });
+});
+
+describe('預算', () => {
+  afterEach(() => {
+    delete settings.aiTripBudgetTwd;
+  });
+
+  const withUsage = (costTwd: number): Trip => ({ ...mkTrip([]), ai: { dayChecks: {}, usage: { costTwd, calls: 1, inputTokens: 0, outputTokens: 0, byFeature: {} } } });
+
+  it('預設上限 200；用到上限就算超過；0 = 不限制', () => {
+    expect(ai.aiBudget(mkTrip([]))).toEqual({ used: 0, limit: 200, remaining: 200, exceeded: false });
+    expect(ai.aiBudget(withUsage(199.5))).toMatchObject({ limit: 200, exceeded: false, remaining: 0.5 });
+    expect(ai.aiBudget(withUsage(200))).toMatchObject({ exceeded: true, remaining: 0 });
+    settings.aiTripBudgetTwd = 0;
+    expect(ai.aiBudget(withUsage(5000))).toEqual({ used: 5000, limit: 0, remaining: Infinity, exceeded: false });
+    settings.aiTripBudgetTwd = -3;
+    expect(ai.aiBudget(withUsage(10)).limit).toBe(200);
+  });
+
+  it('上限訊息', () => {
+    expect(ai.budgetMessage(200)).toBe('本趟 AI 花費已達上限 NT$200，可到 更多 → App 設定 調高上限');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 地點辨識                                                             */
+/* ------------------------------------------------------------------ */
+
+/** 和真實試算表同樣結構的假行程（多城市、日期列、交通列、泛稱、半夜時間） */
+function placesTrip(): Trip {
+  const it = (id: string, date: string | null, p: Partial<Item>): Item => ({
+    id, date, title: id, type: 'other', done: false, createdAt: 0, updatedAt: 0, ...p,
+  });
+  return {
+    ...mkTrip([
+      it('a1', '2027-03-02', { time: '20:10', tag: '航班', type: 'transport', title: '★ 長榮 BR 26', route: { from: 'TPE', to: 'SEA' }, transit: '飛行 10 小時' }),
+      it('a2', '2027-03-02', { time: '16:30', tag: '住宿', type: 'stay', title: '入住', address: 'Hotel Andra' }),
+      it('b1', '2027-03-03', { time: '9:00', tag: '景點', type: 'sight', title: '★★ Space Needle（先買票）', address: '400 Broad St', note: '⚠ 早上人少'.padEnd(120, '。') }),
+      it('b2', '2027-03-03', { time: '12:00', tag: '午餐', type: 'food', title: '◇ 市場午餐', address: '步行 15 分 / 0.8 mile' }),
+      it('b3', '2027-03-03', { time: '0:45', tag: '回程', type: 'transport', title: '回飯店', address: '回程' }),
+      it('c1', '2027-03-04', { time: '8:00', tag: '起床', title: '起床、打包' }),
+      it('c2', '2027-03-04', { time: '10:00', tag: '交通', type: 'transport', title: '開車去波特蘭', route: { from: 'Hotel Andra', to: 'Portland' }, transit: '驅車 174 mile' }),
+      it('m1', '2027-03-04', { title: '自己設定的地點', place: { query: 'My place', source: 'manual' } }),
+      it('u1', null, { title: '還沒排日期的咖啡店', dayOffset: 4 }),
+    ]),
+    city: '',
+    cityGeo: undefined,
+    startDate: '2027-03-02',
+    endDate: '2027-03-05',
+    localCurrency: 'USD',
+    days: {
+      '2027-03-02': { label: '台北 → 西雅圖｜住 Hotel Andra', city: '西雅圖', lodging: 'Hotel Andra', source: 'rule' },
+      '2027-03-03': { label: '西雅圖｜住 Hotel Andra', city: '西雅圖', lodging: 'Hotel Andra', source: 'rule' },
+      '2027-03-04': { label: '西雅圖 → 波特蘭｜住 Hotel Lucia', city: '波特蘭', lodging: 'Hotel Lucia', source: 'rule' },
+      '2027-03-05': { label: '海邊一日遊', city: '波特蘭', lodging: 'Hotel Lucia', source: 'rule' },
+    },
+  };
+}
+
+describe('地點辨識：分批', () => {
+  it('手動設定的不送；同一天放一起，沒有日期的放最後；整趟時沒有行程點的日子也放進第一批', () => {
+    const chunks = ai.buildPlacesChunks(placesTrip());
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].items.map((i) => i.id)).toEqual(['a1', 'a2', 'b1', 'b2', 'b3', 'c1', 'c2', 'u1']);
+    expect(chunks[0].dates).toEqual(['2027-03-02', '2027-03-03', '2027-03-04', '2027-03-05']);
+  });
+
+  it('超過上限就分批：這批快滿時讓同一天留在一起，不然補滿；每批的日期跟著行程點', () => {
+    const chunks = ai.buildPlacesChunks(placesTrip(), null, 4);
+    expect(chunks.map((c) => c.items.map((i) => i.id))).toEqual([['a1', 'a2', 'b1', 'b2'], ['b3', 'c1', 'c2', 'u1']]);
+    expect(chunks[0].dates).toEqual(['2027-03-02', '2027-03-03', '2027-03-05']); // 沒有行程點的 3/5 放第一批
+    expect(chunks[1].dates).toEqual(['2027-03-03', '2027-03-04']);
+    const tiny = ai.buildPlacesChunks(placesTrip(), null, 2);
+    expect(tiny.map((c) => c.items.length)).toEqual([2, 2, 2, 2]);
+    // 8 天、每天 8 站：第 8 天放不下時這批已經 56 站，整天換到下一批
+    const t = placesTrip();
+    t.items = Array.from({ length: 64 }, (_, i) => mkItem({ id: `d${i}`, title: `站 ${i}`, date: `2027-04-${String(1 + Math.floor(i / 8)).padStart(2, '0')}` }));
+    expect(ai.buildPlacesChunks(t, null, 60).map((c) => c.items.length)).toEqual([56, 8]);
+  });
+
+  it('60 站一批：130 站分成 3 批', () => {
+    const t = placesTrip();
+    t.items = Array.from({ length: 130 }, (_, i) => mkItem({ id: `x${i}`, title: `站 ${i}`, date: `2027-03-0${2 + (i % 4)}` }));
+    const chunks = ai.buildPlacesChunks(t);
+    expect(chunks.map((c) => c.items.length)).toEqual([60, 60, 10]);
+    expect(chunks.flatMap((c) => c.items.map((i) => i.id)).sort()).toEqual(t.items.map((i) => i.id).sort());
+  });
+
+  it('指定行程點：只送那些，日期只含那些行程點的日子', () => {
+    const chunks = ai.buildPlacesChunks(placesTrip(), ['b2', 'c2', 'm1']);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].items.map((i) => i.id)).toEqual(['b2', 'c2']);
+    expect(chunks[0].dates).toEqual(['2027-03-03', '2027-03-04']);
+    expect(ai.buildPlacesChunks(placesTrip(), [])).toEqual([]);
+  });
+});
+
+describe('地點辨識：提示詞與整理', () => {
+  it('提示詞帶整趟日期列、這批日期的城市與住宿、行程點 JSON（備註截到 80 字、路線用箭頭）', () => {
+    const t = placesTrip();
+    const [chunk] = ai.buildPlacesChunks(t);
+    const p = ai.buildPlacesPrompt(t, chunk, { index: 2, total: 3 });
+    expect(p).toContain('- 2027-03-04 3/4（四）西雅圖 → 波特蘭｜住 Hotel Lucia');
+    expect(p).toContain('"date":"2027-03-02","weekday":"週二","label":"台北 → 西雅圖｜住 Hotel Andra","city":"西雅圖","lodging":"Hotel Andra"');
+    expect(p).toContain('"route":"TPE → SEA"');
+    expect(p).toContain('"tag":"航班"');
+    expect(p).toContain('"transit":"驅車 174 mile"');
+    expect(p).toContain('分 3 批送出，這是第 2 批');
+    expect(p).toContain('共 8 個');
+    expect(p).not.toContain('自己設定的地點');
+    const note = /"note":"([^"]*)"/.exec(p)?.[1] ?? '';
+    expect(note.length).toBe(80);
+    expect(p).toContain('出發的機場或車站');
+    expect(p).toContain('當天的住宿');
+    expect(p).toContain('navigable');
+  });
+
+  it('整理：不認得的 id 與日期丟掉、每個只取第一筆、記號去掉、國碼轉大寫、空查詢略過', () => {
+    const t = placesTrip();
+    const [chunk] = ai.buildPlacesChunks(t, ['b1', 'b2', 'b3']);
+    const r = ai.normalizePlaces(
+      {
+        days: [
+          { date: '2027-03-03', city: '西雅圖', cityEn: 'Seattle', region: 'Washington', countryCode: 'us' },
+          { date: '2027-03-03', city: '別的', cityEn: 'Other', region: '', countryCode: 'US' },
+          { date: '2027-03-09', city: '亂入', cityEn: 'X', region: '', countryCode: 'US' },
+          { date: '2027-03-03' },
+        ],
+        items: [
+          { id: 'b1', name: '★★ Space Needle', query: ' Space Needle, 400 Broad St, Seattle, WA, USA, ', navigable: true },
+          { id: 'b1', name: 'dup', query: 'dup', navigable: true },
+          { id: 'zzz', name: '不存在', query: 'Nowhere', navigable: true },
+          { id: 'b2', name: '', query: '   ', navigable: true },
+          { id: 'b3', name: '', query: 'Hotel Andra, 2000 4th Ave, Seattle, WA, USA', navigable: true },
+          'junk',
+        ],
+      },
+      chunk,
+    );
+    expect(r.days).toEqual({ '2027-03-03': { city: '西雅圖', cityEn: 'Seattle', region: 'Washington', countryCode: 'US' } });
+    expect(r.items).toEqual({
+      b1: { name: 'Space Needle', query: 'Space Needle, 400 Broad St, Seattle, WA, USA', navigable: true },
+      b3: { name: '回飯店', query: 'Hotel Andra, 2000 4th Ave, Seattle, WA, USA', navigable: true },
+    });
+  });
+});
+
+describe('地點辨識與記帳（假的 fetch）', () => {
+  let keyN = 100;
+  let calls: { body: Record<string, unknown>; headers: Headers }[] = [];
+
+  /** 回覆內容 → SSE（含 usage） */
+  function sse(json: unknown, usage: Record<string, unknown>, stop_reason = 'end_turn'): string {
+    const msg = { id: 'msg_p', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: null, stop_sequence: null, content: [], usage };
+    const ev: [string, unknown][] = [
+      ['message_start', { type: 'message_start', message: msg }],
+      ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: JSON.stringify(json) } }],
+      ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+      ['message_delta', { type: 'message_delta', delta: { stop_reason, stop_sequence: null }, usage }],
+      ['message_stop', { type: 'message_stop' }],
+    ];
+    return ev.map(([e, d]) => `event: ${e}\ndata: ${JSON.stringify(d)}\n\n`).join('');
+  }
+
+  function mockApi(reply: (body: Record<string, unknown>, n: number) => { json: unknown; usage?: Record<string, unknown>; stop?: string }) {
+    calls = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        calls.push({ body, headers: new Headers(init?.headers) });
+        const r = reply(body, calls.length);
+        return new Response(sse(r.json, r.usage ?? { input_tokens: 6000, output_tokens: 8000 }, r.stop), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }),
+    );
+  }
+
+  /** 從請求的提示詞讀出這批的 id，全部回答 */
+  const answerAll = (body: Record<string, unknown>) => {
+    const text = ((body.messages as { content: string }[])[0].content as string) ?? '';
+    const ids = [...text.matchAll(/"id":"([^"]+)"/g)].map((m) => m[1]);
+    const dates = [...new Set([...text.matchAll(/"date":"(\d{4}-\d{2}-\d{2})","weekday"/g)].map((m) => m[1]))];
+    return {
+      days: dates.map((date) => ({ date, city: '西雅圖', cityEn: 'Seattle', region: 'Washington', countryCode: 'US' })),
+      items: ids.map((id) => ({ id, name: `N-${id}`, query: `Q-${id}, Seattle, WA, USA`, navigable: true })),
+    };
+  };
+
+  beforeEach(() => {
+    settings.anthropicApiKey = `sk-ant-places-${++keyN}`;
+    settings.aiModel = 'claude-opus-5-5';
+    delete settings.aiTripBudgetTwd;
+    for (const k of Object.keys(trips)) delete trips[k];
+    mutateTrip.mockClear();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('分批依序送出（每批都帶日期背景），結果合併；每批都記在 places', async () => {
+    const t = placesTrip();
+    t.items = Array.from({ length: 70 }, (_, i) => mkItem({ id: `x${i}`, title: `站 ${i}`, date: i < 35 ? '2027-03-03' : '2027-03-04' }));
+    t.rate = 31; // 當地貨幣是美元：1 USD = 31 TWD
+    trips[t.id] = t;
+    mockApi((body) => ({ json: answerAll(body) }));
+    const parts: number[] = [];
+    const r = await ai.resolvePlacesFor(t, { onChunk: (p, done, total) => void parts.push(Object.keys(p.items).length, done, total) });
+    expect(calls).toHaveLength(2);
+    expect(parts).toEqual([60, 1, 2, 10, 2, 2]);
+    expect(Object.keys(r.items)).toHaveLength(70);
+    expect(r.items.x0).toEqual({ name: 'N-x0', query: 'Q-x0, Seattle, WA, USA', navigable: true });
+    expect(Object.keys(r.days).sort()).toEqual(['2027-03-02', '2027-03-03', '2027-03-04', '2027-03-05']);
+    for (const c of calls) {
+      expect(c.body).toMatchObject({ model: 'claude-opus-5-5', stream: true, max_tokens: 20000, fallbacks: 'default', output_config: { effort: 'medium', format: { type: 'json_schema' } } });
+      expect(c.body).not.toHaveProperty('temperature');
+      expect(c.body).not.toHaveProperty('thinking');
+      const schema = (c.body.output_config as { format: { schema: Record<string, unknown> } }).format.schema;
+      expect(schema).toMatchObject({ additionalProperties: false, required: ['days', 'items'] });
+      expect(JSON.stringify(schema)).toContain('"required":["id","name","query","navigable"]');
+      const text = (c.body.messages as { content: string }[])[0].content;
+      expect(text).toContain('整趟每天的安排');
+      expect(text).toContain('Hotel Lucia');
+    }
+    // 6000 輸入 × $4 + 8000 輸出 × $20 = $0.184 × 31 = NT$5.704，兩批
+    const u = trips[t.id].ai.usage!;
+    expect(u.calls).toBe(2);
+    expect(u.byFeature.places).toBeCloseTo(11.408, 3);
+    expect(u.costTwd).toBeCloseTo(11.408, 3);
+    expect(u.inputTokens).toBe(12000);
+    expect(u.outputTokens).toBe(16000);
+  });
+
+  it('伺服器改用備援模型：iterations 全部計入', async () => {
+    const t = placesTrip();
+    trips[t.id] = t;
+    const usage = {
+      input_tokens: 1000,
+      output_tokens: 2000,
+      iterations: [
+        { type: 'message', model: 'claude-opus-5-5', input_tokens: 1000, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        { type: 'fallback_message', model: 'claude-opus-5', input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      ],
+    };
+    mockApi((body) => ({ json: answerAll(body), usage }));
+    await ai.resolvePlaces(t);
+    const expected = ((1000 * 4 + 100 * 20 + 1000 * 5 + 2000 * 25) / 1e6) * 32;
+    expect(trips[t.id].ai.usage!.costTwd).toBeCloseTo(expected, 3);
+  });
+
+  it('剩餘額度不到 NT$15：不送出，說明要調高上限', async () => {
+    const t = placesTrip();
+    t.ai = { dayChecks: {}, usage: { costTwd: 190, calls: 9, inputTokens: 0, outputTokens: 0, byFeature: { places: 190 } } };
+    trips[t.id] = t;
+    mockApi((body) => ({ json: answerAll(body) }));
+    await expect(ai.resolvePlaces(t)).rejects.toMatchObject({ code: 'budget', message: expect.stringContaining('只剩 NT$10') });
+    expect(calls).toHaveLength(0);
+    settings.aiTripBudgetTwd = 0; // 不限制
+    await ai.resolvePlaces(t);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('其他功能：超過本趟上限就不送出（budget），訊息說明到哪裡調高；沒超過就記在各自的功能', async () => {
+    const t = mkTrip(day);
+    trips[t.id] = t;
+    const segs = JSON.stringify({ segments: [{ minutes: 10, mode: '步行', tip: '' }, { minutes: 20, mode: '電車', tip: '' }], warnings: [], summary: '' });
+    calls = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_i: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ body: JSON.parse(String(init?.body ?? '{}')), headers: new Headers(init?.headers) });
+        return new Response(sse(JSON.parse(segs), { input_tokens: 1000, output_tokens: 2000 }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }),
+    );
+    await ai.checkDay(t, '2026-11-21');
+    const u = trips[t.id].ai.usage!;
+    expect(u.byFeature.dayCheck).toBeCloseTo(((1000 * 4 + 2000 * 20) / 1e6) * 32, 4);
+    expect(u.calls).toBe(1);
+
+    trips[t.id] = { ...trips[t.id], ai: { ...trips[t.id].ai, usage: { ...u, costTwd: 200 } } };
+    await expect(ai.checkDay(t, '2026-11-21')).rejects.toMatchObject({ code: 'budget', message: '本趟 AI 花費已達上限 NT$200，可到 更多 → App 設定 調高上限' });
+    await expect(ai.recommendPlaces(t, '2026-11-21', '')).rejects.toMatchObject({ code: 'budget' });
+    const jpeg = new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xe0])], { type: 'image/jpeg' });
+    await expect(ai.scanReceipt(t, jpeg)).rejects.toMatchObject({ code: 'budget' });
+    await expect(ai.resolvePlaces(t)).rejects.toMatchObject({ code: 'budget' });
+    expect(calls).toHaveLength(1);
+    expect(ai.aiErrorMessage(new AIError('budget', ai.budgetMessage(300)))).toContain('NT$300');
+  });
+
+  it('截斷的回覆也記帳（已經計費），再回報錯誤', async () => {
+    const t = placesTrip();
+    trips[t.id] = t;
+    mockApi(() => ({ json: { days: [] }, stop: 'max_tokens', usage: { input_tokens: 6000, output_tokens: 20000 } }));
+    await expect(ai.resolvePlaces(t)).rejects.toMatchObject({ code: 'bad_output' });
+    expect(trips[t.id].ai.usage!.byFeature.places).toBeCloseTo(((6000 * 4 + 20000 * 20) / 1e6) * 32, 3);
+  });
+
+  it('測試連線不記帳也不檢查預算', async () => {
+    const t = mkTrip([]);
+    t.ai = { dayChecks: {}, usage: { costTwd: 999, calls: 1, inputTokens: 0, outputTokens: 0, byFeature: {} } };
+    trips[t.id] = t;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ id: 'm', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', stop_sequence: null, content: [{ type: 'text', text: 'OK' }], usage: { input_tokens: 10, output_tokens: 5 } }), { status: 200, headers: { 'content-type': 'application/json' } })),
+    );
+    await ai.testConnection();
+    expect(mutateTrip).not.toHaveBeenCalled();
+    expect(trips[t.id].ai.usage!.calls).toBe(1);
   });
 });

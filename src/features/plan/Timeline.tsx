@@ -1,5 +1,6 @@
 /**
- * 行程時間軸：卡片（時間、名稱、類型、停留／需時、費用、評分、完成勾勾）＋卡片之間的移動資訊。
+ * 行程時間軸：卡片（時間、名稱、分類、必做／可省略、停留／需時、費用、評分、完成勾勾）＋卡片之間的移動資訊。
+ * 卡片最多兩行小字：一排分類資訊，再一行路線／交通說明（「SEA → PDX · Uber 30 分」）。
  * 點卡片開地點頁；點移動那一行開「移動」彈出頁。
  */
 import { AnimatePresence, motion } from 'motion/react';
@@ -11,7 +12,7 @@ import { haptic } from '@/platform';
 import { useData } from '@/store/data';
 import { useUI } from '@/store/ui';
 import { Chip, Icon } from '@/ui';
-import { fmtLocal, segmentLine } from './model';
+import { cardInfo, fmtLocal, segmentLine } from './model';
 import s from './plan.module.css';
 
 const EASE = [0.2, 0.8, 0.2, 1] as const;
@@ -63,6 +64,7 @@ export function Timeline({
 function ItemCard({ tripId, it, currency, reduce }: { tripId: string; it: Item; currency: string; reduce: boolean }) {
   const openSheet = useUI((st) => st.openSheet);
   const type = itemType(it.type);
+  const info = cardInfo(it);
   const hasRating = typeof it.rating === 'number' && Number.isFinite(it.rating);
   const hasCost = typeof it.cost === 'number' && Number.isFinite(it.cost);
   return (
@@ -84,8 +86,18 @@ function ItemCard({ tripId, it, currency, reduce }: { tripId: string; it: Item; 
           <span className={s.meta}>
             <span className={s.parts}>
               <span>
-                <Chip color={type.color}>{type.label}</Chip>
+                <Chip color={type.color}>{info.tag}</Chip>
               </span>
+              {info.flag === 'must' && (
+                <span className={s.must}>
+                  <b aria-hidden>★</b>必做
+                </span>
+              )}
+              {info.flag === 'optional' && (
+                <span>
+                  <i className={s.optional}>可省略</i>
+                </span>
+              )}
               {it.durationMin ? (
                 <span className="num">
                   {durationWord(it.type)} {it.durationMin} 分
@@ -99,6 +111,7 @@ function ItemCard({ tripId, it, currency, reduce }: { tripId: string; it: Item; 
                 </span>
               ) : null}
             </span>
+            {info.line && <span className={`num ${s.cardLine}`}>{info.line}</span>}
           </span>
         </span>
       </button>

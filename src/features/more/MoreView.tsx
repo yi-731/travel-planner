@@ -1,5 +1,6 @@
 /**
- * 「更多」分頁：目前行程卡（點一下開行程設定）＋分組清單（封面、資料、App）＋刪除行程。
+ * 「更多」分頁：目前行程卡（點一下開行程設定）＋分組清單（封面、資料、AI 助理、App）＋刪除行程。
+ * AI 助理（有金鑰時）：本趟 AI 已用多少（點一下看各功能）、AI 智慧辨識地點（features/ai/useResolvePlaces）。
  * 切換／新增行程在頂部的行程選單；景點推薦、天氣、排程檢查在各自的分頁，這裡不重複放。
  * 沒有任何行程時也會顯示（AppShell 不擋這一頁）：只留建立／匯入／還原與 App 設定。
  *
@@ -8,8 +9,11 @@
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { useEffect, useRef, useState } from 'react';
 import type { Trip } from '@/domain/types';
+import { budgetLevel, budgetRatio, fmtTokens, fmtTwd, fmtTwdRange, usageBreakdown, usageTitle } from '@/features/ai/aiUsage';
+import { pendingPlaceIds } from '@/features/ai/placesMerge';
+import { useResolvePlaces } from '@/features/ai/useResolvePlaces';
 import { haptic, isNative, isStandalonePWA, platform } from '@/platform';
-import { aiReady } from '@/services/ai';
+import { aiBudget, aiReady, estimatePlacesTwd } from '@/services/ai';
 import { useActiveTrip, useData } from '@/store/data';
 import { useUI } from '@/store/ui';
 import { Button, Icon, ListGroup, ListRow, Orb, PageHead, Pill, Spinner, useBlobUrl } from '@/ui';
@@ -171,11 +175,13 @@ function TripSections({ trip }: { trip: Trip }) {
         </ListGroup>
       </motion.div>
 
-      <motion.div {...enter(4)}>
+      <AiSection trip={trip} enterAt={enter(4)} />
+
+      <motion.div {...enter(5)}>
         <AppGroup />
       </motion.div>
 
-      <motion.div {...enter(5)}>
+      <motion.div {...enter(6)}>
         <DangerZone trip={trip} />
       </motion.div>
     </>
@@ -317,6 +323,124 @@ function BackupRows() {
   );
 }
 
+/** 本趟預算；aiBudget 出錯時（不該發生）退回只看已用金額 */
+function safeBudget(trip: Trip): { used: number; limit: number; exceeded: boolean } {
+  try {
+    return aiBudget(trip);
+  } catch {
+    return { used: trip.ai?.usage?.costTwd ?? 0, limit: 0, exceeded: false };
+  }
+}
+
+/** AI 助理（有金鑰時）：本趟 AI 用量（點一下看各功能）＋ AI 智慧辨識地點 */
+function AiSection({ trip, enterAt }: { trip: Trip; enterAt: ReturnType<ReturnType<typeof useEnter>> }) {
+  const apiKey = useData((st) => st.settings.anthropicApiKey);
+  const model = useData((st) => st.settings.aiModel);
+  // 改上限時重新計算（aiBudget 從 store 讀設定）
+  useData((st) => st.settings.aiTripBudgetTwd);
+  const openSheet = useUI((st) => st.openSheet);
+  const places = useResolvePlaces(trip.id);
+  const [open, setOpen] = useState(false);
+  if (!safeAiReady(apiKey ?? '')) return null;
+
+  const usage = trip.ai?.usage;
+  const b = safeBudget(trip);
+  const ratio = budgetRatio(b.used, b.limit);
+  const level = budgetLevel(b.used, b.limit);
+  const rows = usageBreakdown(usage);
+
+  const pending = pendingPlaceIds(trip);
+  const resolvedAt = trip.ai?.placesResolvedAt;
+  const all = !resolvedAt || pending.length === 0;
+  const hasPlaces = trip.items.some((it) => it.place?.source !== 'manual') || Object.keys(trip.days ?? {}).length > 0;
+  let est = '';
+  try {
+    est = hasPlaces ? fmtTwdRange(estimatePlacesTwd(trip, model, all ? null : pending)) : '';
+  } catch {
+    est = '';
+  }
+  const placesSub = places.busy ? (
+    'AI 正在辨識，完成後會通知你'
+  ) : places.error ? (
+    <span className={s.badText}>{places.error}</span>
+  ) : !hasPlaces ? (
+    '先匯入試算表或新增行程點'
+  ) : resolvedAt ? (
+    `上次 ${fmtSyncTime(resolvedAt)} · ${pending.length ? `${pending.length} 個新地點待辨識` : '點一下重新辨識全部'} · ${est}`
+  ) : (
+    `判斷每天在哪個城市、每一站的導航目的地 · ${est}`
+  );
+
+  return (
+    <motion.div {...enterAt}>
+      <ListGroup title="AI 助理">
+        <ListRow
+          icon="wallet"
+          iconColor={level === 'full' ? 'var(--bad)' : undefined}
+          title={<span className="num">{usageTitle(b.used, b.limit)}</span>}
+          subtitle={
+            <span className={`${s.usageSub} ${level === 'warn' ? s.usageWarn : level === 'full' ? s.usageFull : ''}`}>
+              {ratio != null && (
+                <span className={s.usageBar} aria-hidden>
+                  <span className={s.usageFill} style={{ width: `${b.used > 0 ? Math.max(2, ratio * 100) : 0}%` }} />
+                </span>
+              )}
+              <span>{b.exceeded ? '已達上限，AI 功能暫停中 · 點一下看明細' : usage?.calls ? `${usage.calls} 次 · 點一下看各功能` : '還沒有使用 · 點一下看說明'}</span>
+            </span>
+          }
+          chevron={false}
+          end={<Icon name="chevronDown" size={16} className={`${s.caret} ${open ? s.caretOpen : ''}`} />}
+          onClick={() => setOpen((v) => !v)}
+        />
+        <AnimatePresence initial={false}>
+          {open && (
+            <motion.div key="usage" className={s.inlinePanel} initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.28, ease: EASE }}>
+              <div className={s.inlineIn}>
+                {rows.length ? (
+                  <ul className={s.usageList} aria-label="各功能花費">
+                    {rows.map((r) => (
+                      <li key={r.key}>
+                        <span>{r.label}</span>
+                        <span className="num">{fmtTwd(r.costTwd)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className={s.inlineBody}>這趟旅程還沒有用過 AI。</p>
+                )}
+                <p className={s.inlineBody}>
+                  {usage?.calls ? `共 ${usage.calls} 次，輸入 ${fmtTokens(usage.inputTokens)}、輸出 ${fmtTokens(usage.outputTokens)} token（含思考）。` : ''}
+                  依 Anthropic 回傳的用量與官方單價估算，實際金額以 Anthropic 帳單為準。
+                </p>
+                <div className="row">
+                  <Button variant="plain" size="sm" icon="gear" onClick={() => openSheet({ name: 'appSettings' })}>
+                    {b.limit ? `調整上限（目前 NT$${b.limit}）` : '設定花費上限'}
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <ListRow
+          icon="pin"
+          title="AI 智慧辨識地點"
+          subtitle={placesSub}
+          chevron={false}
+          end={places.busy ? <Spinner /> : undefined}
+          onClick={() => {
+            if (places.busy) return;
+            if (!hasPlaces) {
+              openSheet({ name: 'import' });
+              return;
+            }
+            void places.run({ all });
+          }}
+        />
+      </ListGroup>
+    </motion.div>
+  );
+}
+
 /** AI 助理（未設定金鑰時）、App 設定、安裝到主畫面、關於 */
 function AppGroup() {
   const openSheet = useUI((st) => st.openSheet);
@@ -333,7 +457,7 @@ function AppGroup() {
           icon="spark"
           iconColor="var(--accent)"
           title="AI 助理"
-          subtitle="排程檢查、景點推薦、穿搭建議會用到，貼上金鑰就能用"
+          subtitle="地點辨識、排程檢查、景點推薦會用到，貼上金鑰就能用"
           end={<Pill style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>未設定</Pill>}
           onClick={() => openSheet({ name: 'appSettings' })}
         />

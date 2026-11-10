@@ -24,7 +24,7 @@ src/
   app/        App 外框：TopBar、TabBar（浮動膠囊）、SheetHost（底部彈出頁）、Toasts、sheetRegistry
   domain/     純資料與邏輯（無 React）：types.ts（唯一資料模型）、constants、dates、money、schedule
   store/      zustand：data.ts（持久化：行程、設定）、ui.ts（分頁、彈出頁堆疊、toast、busy）、migrations.ts
-  services/   對外連線與檔案：weather、fx、geocode、sheets、importer、exporter、ai、links
+  services/   對外連線與檔案：weather、fx、geocode、sheets、importer、exporter、ai、links、places（規則版地點辨識：日期列、地點欄、導航目的地）
   platform/   原生／網頁差異（觸覺、分享、選照片、定位、通知、狀態列）。元件不要直接 import @capacitor/*
   ui/         設計系統元件：Button / LinkButton / Sheet / ListGroup / ListRow / Tile / Chip / Picker / 表單欄位 / Orb / Icon
   features/   各功能（一個資料夾一個功能，自帶 *.module.css）
@@ -43,6 +43,7 @@ src/
 9. 新增彈出頁：`store/ui.ts` 的 `SheetRoute` 加型別 → `app/sheetRegistry.tsx` 註冊 → 在 features 建元件（default export）。
 10. 純邏輯寫測試（`*.test.ts` 放在同資料夾）。
 11. iPhone 細節：觸控目標 ≥ 44px；注意瀏海與底部安全區（env(safe-area-inset-*)）；輸入框字級 ≥ 16px（避免 iOS 自動放大）；`100dvh` 而非 `100vh`。
+12. **範例一律虛構**：這個 repo 是公開的。測試資料、註解、文件、介面範例、AI 提示詞都不要照抄使用者真實的行程表（飯店、航班、場館、日期與時間），改用虛構的城市與行程（例如西雅圖、波特蘭、京都的虛構旅程）。`src/privacy.guard.test.ts` 會擋下已知的私人字串。
 
 ## PWA 與原生 App 設定
 - **最低 iOS 16.4**：Vite 預設建置目標是 Safari 16.4，CSS 也用到 color-mix()。`ios/App/App.xcodeproj/project.pbxproj` 的 `IPHONEOS_DEPLOYMENT_TARGET` 同樣是 16.4，兩邊要一致。
@@ -55,6 +56,14 @@ src/
 ## 設計語言
 參考圖：大字襯線城市名（Instrument Serif）、霧面玻璃卡片疊在日落橘光球上、黑色膠囊按鈕＋橘色圓形箭頭（`<Button variant="go">`）、浮動黑色分頁列。
 數字（時間、金額、溫度）用襯線大字＋ tabular-nums。中文標題用系統字（PingFang TC）粗體。
+
+## 多城市行程與地點辨識
+- `Trip.days`（key 是日期；還沒有出發日的「第 N 天」是 `__D3`）存每天的城市、住宿與座標。天氣每天依當天城市抓（`weather.ts` 的 `weatherLocations`），導航目的地帶當天城市背景。
+- `services/places.ts`：`parseDayBanner`（日期列「12/04（五）｜A → B｜住 X」；一日遊的 city 是白天去的地方，住宿沿用前一天）、`classifyLocation`（地點欄：地址／地點／路線／交通說明／泛稱）、`applyRulePlaces`（整趟套用，純函式、可重複跑；不覆蓋 AI／手動的結果；沒有日期列的日子不存，`dayMetaFor` 會往前找）。改了某天城市、行程城市或出發日後要重跑（DayInfoSheet、`more/model.ts` 的 `applyForm` 已經會跑）。
+- 只有活動名稱、沒有場館的行程（「彩排」「開幕演唱會」＋看台）、起床／打包這類 `place.navigable = false`：沒有導航按鈕、不放進路線與地圖。用 `canNavigate` 判斷。
+- `weather.ts` 的 `CITY_ALIAS_TABLE`：`顯示名|English|國碼|其他寫法|州或省（選填）`。中文城市名要靠它換成英文才查得到（Open-Meteo 用中文查「台南」會找到中國的同名村莊）；州用來在同名城市裡選對的；其他寫法也拿來在行程文字裡找城市（「住 Harbor Inn Portland」→ 波特蘭）。
+- 一天的順序：`itemsOfDay`（`domain/schedule.ts`）。試算表匯入的有 `Item.seq`，照試算表順序（跨換日線的航班、晚上之後的「0:45」）；過午夜的時間用 `itemMinutes` 算成 24:45（提醒、日曆記在隔天）。
+- 匯出的 Excel 會寫日期列、★／◇、分類與路線，可以原樣再匯入。
 
 ## AI
 `services/ai.ts`，使用者在「更多 → App 設定」填自己的 Anthropic API 金鑰（只存在裝置）。預設模型 `claude-opus-5-5`。

@@ -3,7 +3,7 @@ import { SCHEMA_VERSION } from '@/store/migrations';
 import { mkTrip, testSettings as defaultSettings } from './fixtures.test-util';
 import { buildSampleTrip } from '@/store/sample';
 import type { Trip } from '@/domain/types';
-import { BackupError, backupJson, buildBackup, healTrips, normalizeTrip, parseBackup, restorePlan } from './backup';
+import { BackupError, backupJson, buildBackup, healSettings, healTrips, normalizeTrip, parseBackup, restorePlan } from './backup';
 
 const sample = () =>
   mkTrip({
@@ -184,6 +184,12 @@ describe('healTrips (persisted data on launch)', () => {
       items: [
         { id: 'i1', title: '清水寺', type: 'sight', date: '2026-11-21', time: '09:30', address: '', geo: { lat: 35, lng: 135.78, source: 'link' }, durationMin: 90, cost: 500, rating: 4.5, note: '早點去', link: 'https://example.com', done: true, createdAt: 1, updatedAt: 2 },
         { id: 'i2', title: '', type: 'other', date: null, dayOffset: 3, done: false, createdAt: 1, updatedAt: 1 },
+        {
+          id: 'i3', title: '搭新幹線', type: 'transport', date: '2026-11-22', done: false, createdAt: 1, updatedAt: 1,
+          place: { query: 'Kyoto Station, Kyoto, Japan', name: '京都車站', source: 'ai', navigable: true },
+          route: { from: '京都', to: '大阪' }, flag: 'must', tag: '新幹線', transit: '車程 15 分',
+        },
+        { id: 'i4', title: '整理行李', type: 'other', date: '2026-11-22', done: false, createdAt: 1, updatedAt: 1, place: { query: 'Hotel, Kyoto', source: 'rule', navigable: false }, flag: 'optional' },
       ],
       expenses: [
         { id: 'e1', date: '2026-11-21', title: '門票', amount: 500, currency: 'JPY', category: 'ticket', payer: '阿明', split: ['我', '阿明'], receiptBlobKey: 'blob:abc', fromSheet: true, createdAt: 1, updatedAt: 1 },
@@ -194,8 +200,18 @@ describe('healTrips (persisted data on launch)', () => {
       ai: {
         dayChecks: { '2026-11-21': { at: 1, itemIds: ['i1'], segments: [{ minutes: 10, mode: 'walk', tip: '走路' }], warnings: ['太趕'], summary: 'OK' } },
         packing: { at: 1, text: '帶外套', tips: ['外套'] },
+        usage: { costTwd: 12.3456, calls: 4, inputTokens: 9000, outputTokens: 21000, byFeature: { places: 9.1, dayCheck: 3.2456 } },
+        placesResolvedAt: 1234,
       },
-      weather: { fetchedAt: 1, lat: 35, lng: 135.7, days: [{ date: '2026-11-21', code: 3, tMax: 15, tMin: 8, rainProb: 20, sunrise: '06:30', sunset: '16:50', kind: 'forecast' }] },
+      days: {
+        '2026-11-21': { label: '台北 → 京都｜住 Hotel', city: '京都', lodging: 'Hotel', source: 'rule', geo: { lat: 35, lng: 135.7, label: '京都，日本', en: 'Kyoto', admin1: 'Kyoto', timezone: 'Asia/Tokyo', countryCode: 'JP' } },
+        '2026-11-22': { label: '京都 → 大阪', city: '大阪', source: 'ai' },
+        '2026-11-23': { label: '', city: '大阪', source: 'manual' },
+      },
+      weather: {
+        fetchedAt: 1, lat: 35, lng: 135.7, locKey: '2026-11-21=35,135.7',
+        days: [{ date: '2026-11-21', code: 3, tMax: 15, tMin: 8, rainProb: 20, sunrise: '06:30', sunset: '16:50', kind: 'forecast', place: '京都' }],
+      },
       isExample: true,
       createdAt: 1,
       updatedAt: 2,
@@ -230,6 +246,100 @@ describe('healTrips (persisted data on launch)', () => {
   it('is not fooled by non-object input', () => {
     expect(healTrips(null)).toEqual({});
     expect(healTrips([1, 2])).toEqual({});
+  });
+});
+
+describe('smart places, AI usage and per-day cities (schema v2)', () => {
+  const base = { id: 't1', name: '大阪', startDate: '2026-12-01', endDate: '2026-12-03' };
+  const one = (extra: Record<string, unknown>) => normalizeTrip({ ...base, ...extra }, 5)!;
+  const oneItem = (extra: Record<string, unknown>) => one({ items: [{ id: 'i', title: '大阪城', date: '2026-12-01', ...extra }] }).items[0];
+
+  it('keeps valid place / route / flag / tag / transit and drops broken ones', () => {
+    expect(oneItem({ place: { query: 'Osaka Castle, Osaka, Japan', name: '大阪城', source: 'ai', navigable: false }, route: { from: 'A', to: 'B' }, flag: 'must', tag: '演唱會', transit: '步行 5 分' })).toMatchObject({
+      place: { query: 'Osaka Castle, Osaka, Japan', name: '大阪城', source: 'ai', navigable: false },
+      route: { from: 'A', to: 'B' },
+      flag: 'must',
+      tag: '演唱會',
+      transit: '步行 5 分',
+    });
+    const broken = oneItem({ place: { query: '  ' }, route: { from: 1, to: 'B' }, flag: 'maybe', tag: 3, transit: {} });
+    for (const k of ['place', 'route', 'flag', 'tag', 'transit']) expect(k in broken).toBe(false);
+    expect(oneItem({ place: 'Osaka' }).place).toBeUndefined();
+    expect(oneItem({ route: { from: '', to: ' ' } }).route).toBeUndefined();
+    // 來源不認得：當成規則版（之後會被重新辨識）；多餘欄位丟掉；navigable 不是布林就不留
+    expect(oneItem({ place: { query: 'Q', source: 'hack', navigable: 'yes', evil: 1 } }).place).toEqual({ query: 'Q', source: 'rule' });
+  });
+
+  it('days: only real dates, validated geo and source', () => {
+    const t = one({
+      days: {
+        '2026-12-01': { label: '台北 → 大阪', city: '大阪', lodging: 'Hotel', source: 'ai', geo: { lat: 34.7, lng: 135.5, en: 'Osaka', admin1: 5, countryCode: 'JP', junk: 1 } },
+        '2026-12-02': { city: 7, source: 'robot', geo: { lat: 200, lng: 0 } },
+        'Day 3': { city: '京都' },
+        '2026-12-03': 'junk',
+      },
+    });
+    expect(t.days).toEqual({
+      '2026-12-01': { label: '台北 → 大阪', city: '大阪', lodging: 'Hotel', source: 'ai', geo: { lat: 34.7, lng: 135.5, en: 'Osaka', countryCode: 'JP' } },
+      '2026-12-02': {},
+    });
+    expect(one({ days: 'x' }).days).toBeUndefined();
+  });
+
+  it('days: keeps 第 N 天 banners (__D3) that wait for a start date, every launch', () => {
+    const days = {
+      __D1: { label: '大阪 → 京都｜住 Hotel Kyoto', city: '京都', lodging: 'Hotel Kyoto', source: 'rule' },
+      __D12: { label: '奈良一日遊', city: '奈良', source: 'rule' },
+      __Dx: { city: '假的' },
+      __D1234: { city: '太多天' },
+    };
+    const healed = healTrips({ t1: { ...base, startDate: null, endDate: null, days } }, 5).t1;
+    expect(healed.days).toEqual({ __D1: days.__D1, __D12: days.__D12 });
+    // 再整理一次（下次開 App）也一樣
+    expect(healTrips({ t1: healed }, 6).t1.days).toEqual(healed.days);
+  });
+
+  it('keeps the sheet order (seq) of imported stops; drops a broken one', () => {
+    expect(oneItem({ seq: 12 }).seq).toBe(12);
+    expect('seq' in oneItem({ seq: '12' })).toBe(false);
+  });
+
+  it('AI usage: broken numbers become 0, odd feature keys are dropped; placesResolvedAt must be a time', () => {
+    const t = one({ ai: { usage: { costTwd: '12', calls: 2.6, inputTokens: -1, byFeature: { places: 3.5, dayCheck: 'x', '__proto__': 1, 'a b': 1 } }, placesResolvedAt: 'yesterday' } });
+    expect(t.ai.usage).toEqual({ costTwd: 0, calls: 3, inputTokens: 0, outputTokens: 0, byFeature: { places: 3.5 } });
+    expect(t.ai.placesResolvedAt).toBeUndefined();
+    expect(one({ ai: { usage: 'lots' } }).ai.usage).toBeUndefined();
+    expect(one({ ai: { placesResolvedAt: 99 } }).ai.placesResolvedAt).toBe(99);
+  });
+
+  it('round-trips the new fields through a backup file', () => {
+    const t = mkTrip({
+      name: '多城市',
+      items: [{ id: 'x', title: 'Grand Plaza', type: 'sight', date: '2026-12-01', done: false, createdAt: 1, updatedAt: 1, place: { query: 'Grand Plaza, Seattle, WA, USA', source: 'manual' }, tag: '夜景' }],
+      days: { '2026-12-01': { city: '西雅圖', source: 'manual' } },
+      ai: { dayChecks: {}, usage: { costTwd: 5, calls: 1, inputTokens: 10, outputTokens: 20, byFeature: { places: 5 } } },
+    });
+    const back = parseBackup(backupJson(buildBackup({ [t.id]: t }, defaultSettings))).trips[0];
+    expect(back.items[0]).toMatchObject({ place: { query: 'Grand Plaza, Seattle, WA, USA', source: 'manual' }, tag: '夜景' });
+    expect(back.days).toEqual(t.days);
+    expect(back.ai.usage).toEqual(t.ai.usage);
+  });
+});
+
+describe('healSettings', () => {
+  it('keeps valid settings and repairs broken budget / auto-resolve values', () => {
+    expect(healSettings({ ...defaultSettings, aiTripBudgetTwd: 500, aiAutoResolvePlaces: false }, defaultSettings)).toEqual({ ...defaultSettings, aiTripBudgetTwd: 500, aiAutoResolvePlaces: false });
+    expect(healSettings({ ...defaultSettings, aiTripBudgetTwd: 0 }, defaultSettings).aiTripBudgetTwd).toBe(0);
+    const bad = healSettings({ theme: 'neon', aiTripBudgetTwd: '300', aiAutoResolvePlaces: 'yes', reminderLeadMin: -5, defaultHomeCurrency: 'xx', extra: 1 }, defaultSettings);
+    expect(bad).toEqual(defaultSettings);
+    expect(healSettings({ aiTripBudgetTwd: -1 }, defaultSettings).aiTripBudgetTwd).toBe(200);
+    expect(healSettings({ aiTripBudgetTwd: 1e9 }, defaultSettings).aiTripBudgetTwd).toBe(200);
+    expect(healSettings(null, defaultSettings)).toEqual(defaultSettings);
+    // 舊版存的設定沒有新欄位：補預設值
+    const old = { ...defaultSettings } as Partial<typeof defaultSettings>;
+    delete old.aiTripBudgetTwd;
+    delete old.aiAutoResolvePlaces;
+    expect(healSettings(old, defaultSettings)).toMatchObject({ aiTripBudgetTwd: 200, aiAutoResolvePlaces: true });
   });
 });
 

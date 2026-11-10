@@ -3,8 +3,10 @@
  * - 行程設定表單：初始值、驗證、套用到行程（含日期平移、「第 N 天」換算）
  * - 顯示格式：同步時間、匯率預覽、檔名、平台名稱
  */
-import { addDays, diffDays, parseISODate } from '@/domain/dates';
+import { addDays, diffDays, parseISODate, resolveDayKeys } from '@/domain/dates';
 import type { ISODate, Trip } from '@/domain/types';
+import { dropStaleGeo } from '@/features/plan/model';
+import { applyRulePlaces } from '@/services/places';
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -214,17 +216,28 @@ export interface ApplyContext {
   initial?: Pick<TripForm, 'rate' | 'rateUpdatedAt' | 'localCurrency' | 'homeCurrency'>;
 }
 
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
 /**
  * 把表單套用到行程複本（在 mutateTrip 裡呼叫）。
- * - 出發日改了且 shiftItems：有日期的行程點與 AI 排程檢查一起平移
- * - 有「第 N 天」的行程點且已有出發日：換算成日期
+ * - 出發日改了且 shiftItems：有日期的行程點、每天的城市／住宿（days）與 AI 排程檢查一起平移
+ * - 有「第 N 天」的行程點或日期列（days 的 __D3）且已有出發日：換算成日期
+ * - 行程城市、日期改了：有每天城市資料（匯入試算表）的行程重新辨識導航目的地（沒有日期列的日子跟著新的行程城市）
  * - 移除範例標記
  */
 export function applyForm(d: Trip, f: TripForm, ctx: ApplyContext = {}): void {
   const city = f.city.trim();
-  if (city !== d.city.trim()) {
+  const cityChanged = city !== d.city.trim();
+  const before = { start: d.startDate, end: d.endDate };
+  // 匯入過試算表（有每天城市資料或自動辨識的導航目的地）：城市、日期改了要重新辨識
+  const rulePlaces = (!!d.days && Object.keys(d.days).length > 0) || d.items.some((i) => i.place?.source === 'rule');
+  if (cityChanged) {
     d.cityGeo = ctx.cityGeo ? { ...ctx.cityGeo } : undefined;
     d.weather = undefined;
+    // 沒有日期列、由行程城市補出來的日子（舊版存下來的）：移除，改跟著新的行程城市
+    if (d.days) {
+      for (const [k, m] of Object.entries(d.days)) if (m?.source === 'rule' && !m.label?.trim()) delete d.days[k];
+    }
   }
   d.city = city;
   d.name = f.name.trim();
@@ -240,6 +253,12 @@ export function applyForm(d: Trip, f: TripForm, ctx: ApplyContext = {}): void {
     const checks: Trip['ai']['dayChecks'] = {};
     for (const [date, c] of Object.entries(d.ai.dayChecks)) checks[addDays(date, shift)] = c;
     d.ai.dayChecks = checks;
+    // 每天的城市、住宿與座標跟著行程點移動（還沒換算的「第 N 天」不動）
+    if (d.days) {
+      const days: NonNullable<Trip['days']> = {};
+      for (const [k, m] of Object.entries(d.days)) days[ISO_DAY.test(k) ? addDays(k, shift) : k] = m;
+      d.days = days;
+    }
   }
   d.startDate = start;
   d.endDate = f.endDate || null;
@@ -255,6 +274,8 @@ export function applyForm(d: Trip, f: TripForm, ctx: ApplyContext = {}): void {
       if (!it.date) it.date = addDays(start, Math.max(1, Math.round(it.dayOffset)) - 1);
       delete it.dayOffset;
     }
+    // 匯入時還沒有出發日的「第 N 天」日期列（__D3）：換成日期
+    if (d.days) d.days = resolveDayKeys(d.days, start);
     // 沒填回程日：讓日期涵蓋換算後的行程點
     if (!d.endDate) {
       const last = d.items.map((i) => i.date).filter((x): x is string => !!x).sort().pop();
@@ -287,6 +308,20 @@ export function applyForm(d: Trip, f: TripForm, ctx: ApplyContext = {}): void {
   const members = [...new Set(f.members.map((m) => m.trim()).filter(Boolean))];
   d.members = members.length ? members : ['我'];
   delete d.isExample;
+
+  // 城市或日期變了：重新辨識導航目的地（只有匯入過試算表、有每天城市資料的行程）；出錯時保留表單的變更
+  const datesChanged = before.start !== d.startDate || before.end !== d.endDate;
+  if ((cityChanged || datesChanged) && rulePlaces) {
+    try {
+      const prev = d.items;
+      const r = applyRulePlaces(d);
+      // 行程城市由使用者決定：辨識只更新每天的資料與導航目的地
+      d.days = r.days;
+      d.items = dropStaleGeo(prev, r.items);
+    } catch (e) {
+      console.warn('[travel-planner] 重新辨識地點失敗', e);
+    }
+  }
 }
 
 /** 新增旅伴前的檢查；回傳錯誤訊息或 null */
