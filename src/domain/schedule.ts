@@ -17,8 +17,18 @@ export function allItemsSorted(trip: Pick<Trip, 'items'>): Item[] {
   );
 }
 
-/** 導航用的查詢字串：有地址用地址，否則用名稱 */
-export const placeQuery = (it: Pick<Item, 'address' | 'title'>) => (it.address ?? '').trim() || it.title.trim();
+/**
+ * 導航用的查詢字串：優先用地點辨識產生的完整目的地（含城市背景），其次地址，最後名稱。
+ */
+export const placeQuery = (it: Pick<Item, 'address' | 'title'> & { place?: Item['place'] }) =>
+  (it.place?.query ?? '').trim() || (it.address ?? '').trim() || it.title.trim();
+
+/**
+ * 能不能導航：地點辨識判斷為「起床」「整理」這類沒有地點的（navigable = false）不行；
+ * 有座標（地圖連結、手動、定位）的一律可以。多站路線、導航按鈕用這個過濾。
+ */
+export const canNavigate = (it: Pick<Item, 'address' | 'title'> & { place?: Item['place']; geo?: Item['geo'] }) =>
+  !!it.geo || (it.place?.navigable !== false && !!placeQuery(it));
 
 /** AI 檢查結果若和目前順序一致才採用 */
 export function validDayCheck(trip: Trip, date: ISODate): DayCheck | null {

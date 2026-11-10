@@ -9,13 +9,17 @@
  * 遷移出錯時會丟出錯誤（訊息標明哪一版），App 會顯示「資料讀取失敗」並且不寫入，
  * 手機裡的舊資料不會被蓋掉。不要在這裡吞掉錯誤改用空資料。
  */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function migrate(persisted: any, version: number): any {
   const state = persisted ?? {};
   step(1, version, () => {
     // v0 → v1：第一版，無需轉換
+  });
+  step(2, version, () => {
+    // v1 → v2：新增 Trip.days、Item.place/route/flag/tag/transit、AI 用量、Settings.aiTripBudgetTwd/aiAutoResolvePlaces
+    // 全部是選填欄位或由 defaultSettings 補預設值，舊資料不需轉換；行程的地點辨識在使用者下次匯入或按「重新辨識地點」時產生。
   });
   return state;
 }

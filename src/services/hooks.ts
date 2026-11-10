@@ -12,7 +12,18 @@ import type { DailyWeather, ISODate, Item, Trip } from '@/domain/types';
 import { useData } from '@/store';
 import { fetchRate } from './fx';
 import { canGeocode, geocodeMissing, parseMapsLink, searchCenter } from './geocode';
-import { fetchTripWeather, geocodeCity, samePlace, weatherStale } from './weather';
+import { geocodeDays } from './places';
+import {
+  fetchTripWeather,
+  findCityAlias,
+  geocodeCity,
+  primaryWeatherGeo,
+  samePlace,
+  validWeatherDays,
+  weatherLocations,
+  weatherLocKey,
+  weatherStale,
+} from './weather';
 
 /** 自動重抓（非使用者按下重新整理）的最短間隔 */
 const AUTO_RETRY_MS = 10 * 60 * 1000;
@@ -34,11 +45,14 @@ const geoUsers = new Map<string, number>();
 /** 查過但找不到的行程點（地址／名稱／連結沒變就不再查） */
 const geoFailed = new Set<string>();
 const geoBlocked = new Map<string, { sig: string; at: number }>();
+/** 查過但找不到的日期城市（行程 id + 城市；這次開 App 期間不再查） */
+const dayGeoFailed = new Set<string>();
 
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => {
     weatherAttempt.clear();
     geoBlocked.clear();
+    dayGeoFailed.clear();
     useNetStatus.setState((s) => ({ tick: s.tick + 1 }));
   });
 }
@@ -59,17 +73,36 @@ export interface TripWeather {
   fetchedAt: number | null;
 }
 
-/** 影響天氣結果的欄位；變了就重新檢查 */
+const cityKey = (tripId: string, city: string) => `${tripId}|${(findCityAlias(city)?.en ?? city).trim().toLowerCase()}`;
+
+/** 有城市、還沒有座標、也還沒查過失敗的日子（多城市行程） */
+const daysNeedingGeo = (t: Trip): [ISODate, string][] =>
+  Object.entries(t.days ?? {}).flatMap(([d, m]) => {
+    const city = m?.city?.trim();
+    return city && !m.geo && !dayGeoFailed.has(cityKey(t.id, city)) ? [[d, city] as [ISODate, string]] : [];
+  });
+
+/** 行程或任何一天有城市（可以查天氣） */
+const hasAnyCity = (t: Trip) => !!t.cityGeo || !!t.city.trim() || Object.values(t.days ?? {}).some((m) => !!m?.city?.trim() || !!m?.geo);
+
+/** 影響天氣結果的欄位；變了就重新檢查（含每天的城市與座標） */
 const weatherKey = (t: Trip) =>
-  [t.id, t.city.trim(), t.cityGeo ? `${t.cityGeo.lat},${t.cityGeo.lng}` : '', tripDays(t).join(',')].join('|');
+  [
+    t.id,
+    t.city.trim(),
+    t.cityGeo ? `${t.cityGeo.lat},${t.cityGeo.lng}` : '',
+    tripDays(t).join(','),
+    weatherLocKey(weatherLocations(t)),
+    daysNeedingGeo(t).map(([d, c]) => `${d}=${c}`).join(','),
+  ].join('|');
 
 function loadWeather(tripId: string, force: boolean): Promise<void> {
   const running = weatherInflight.get(tripId);
   if (running) return running;
   const trip = useData.getState().trips[tripId];
   if (!trip) return Promise.resolve();
-  const needsGeo = !trip.cityGeo;
-  if (needsGeo && !trip.city.trim()) return Promise.resolve();
+  if (!hasAnyCity(trip)) return Promise.resolve();
+  const needsGeo = (!trip.cityGeo && !!trip.city.trim()) || daysNeedingGeo(trip).length > 0;
   if (!force && !needsGeo && (!tripDays(trip).length || !weatherStale(trip.weather, trip))) return Promise.resolve();
 
   let key = weatherKey(trip);
@@ -85,27 +118,62 @@ function loadWeather(tripId: string, force: boolean): Promise<void> {
     let error: string | null = null;
     try {
       let t: Trip | undefined = trip;
-      if (!t.cityGeo) {
-        const city = t.city;
-        const geo = await geocodeCity(city);
-        if (!geo) {
-          throw new Error(`找不到「${city.trim()}」這個城市。請到「行程設定」改成完整的城市名稱，或改用英文（例如 Osaka）。`);
-        }
-        useData.getState().mutateTrip(tripId, (d) => {
-          if (!d.cityGeo && d.city === city) d.cityGeo = { ...geo };
-        });
+      // 剛寫入座標：之後用這個狀態比對有沒有被改過（自己寫入的座標不算變更）
+      const rekey = () => {
         t = useData.getState().trips[tripId];
-        // 剛寫入城市座標：之後用這個狀態比對有沒有被改過（自己寫入的座標不算變更）
         if (t) {
           key = weatherKey(t);
           weatherAttempt.set(tripId, { key, at: Date.now() });
         }
+      };
+
+      // 1) 多城市行程：每天的城市先定位（中文城市名先換成英文再查，見 geocodeTravelCity）
+      const todo = daysNeedingGeo(t);
+      if (todo.length) {
+        const asked = new Map(todo);
+        const found = new Set<ISODate>();
+        try {
+          await geocodeDays(t, (date, geo) => {
+            found.add(date);
+            useData.getState().mutateTrip(tripId, (d) => {
+              const m = d.days?.[date];
+              if (m && m.city?.trim() === asked.get(date) && !m.geo) m.geo = { ...geo };
+            });
+          });
+          for (const [d, city] of asked) if (!found.has(d)) dayGeoFailed.add(cityKey(tripId, city));
+        } catch {
+          // 連線失敗：這次先用行程城市的天氣，之後（冷卻時間到、重新連上網路）再試
+        }
+        rekey();
       }
-      if (!t?.cityGeo || !tripDays(t).length) return;
-      if (!force && !weatherStale(t.weather, t)) return;
-      const cache = await fetchTripWeather(t);
+
+      // 2) 行程城市：有同城市的日子已定位就直接沿用，否則查一次
+      if (t && !t.cityGeo && t.city.trim()) {
+        const city = t.city;
+        const alias = findCityAlias(city);
+        const fromDay = Object.values(t.days ?? {}).find(
+          (m) => m?.geo && m.city && (m.city.trim() === city.trim() || (!!alias && findCityAlias(m.city) === alias)),
+        )?.geo;
+        const geo = fromDay
+          ? { lat: fromDay.lat, lng: fromDay.lng, label: fromDay.label ?? city.trim(), timezone: fromDay.timezone, countryCode: fromDay.countryCode }
+          : await geocodeCity(city);
+        if (geo) {
+          useData.getState().mutateTrip(tripId, (d) => {
+            if (!d.cityGeo && d.city === city) d.cityGeo = { ...geo };
+          });
+          rekey();
+        } else if (!primaryWeatherGeo(t)) {
+          throw new Error(`找不到「${city.trim()}」這個城市。請到「行程設定」改成完整的城市名稱，或改用英文（例如 Osaka）。`);
+        }
+      }
+
+      const cur: Trip | undefined = t;
+      if (!cur || !primaryWeatherGeo(cur) || !tripDays(cur).length) return;
+      if (!force && !weatherStale(cur.weather, cur)) return;
+      const cache = await fetchTripWeather(cur);
       useData.getState().mutateTrip(tripId, (d) => {
-        if (d.cityGeo && samePlace(d.cityGeo, cache)) d.weather = cache;
+        const p = primaryWeatherGeo(d);
+        if (p && samePlace(p, cache)) d.weather = cache;
       });
     } catch (e) {
       error = message(e, '天氣資料暫時無法取得，請稍後再試一次。');
@@ -127,7 +195,7 @@ function loadWeather(tripId: string, force: boolean): Promise<void> {
   return p;
 }
 
-/** 行程天氣：快取過期才重抓；沒有城市座標時先定位城市 */
+/** 行程天氣：快取過期才重抓；沒有城市座標時先定位城市（多城市行程：每天依當天城市） */
 export function useTripWeather(trip: Trip | null): TripWeather {
   const id = trip?.id ?? null;
   const status = useNetStatus((s) => (id ? s.weather[id] : undefined));
@@ -145,15 +213,16 @@ export function useTripWeather(trip: Trip | null): TripWeather {
   }, [id, key, tick]);
 
   const cache = trip?.weather;
-  const geo = trip?.cityGeo;
+  const geo = trip ? primaryWeatherGeo(trip) : null;
   const valid = !!(cache && geo && samePlace(cache, geo));
   const dayList = trip ? tripDays(trip).join(',') : '';
 
+  // 只顯示行程內、而且是在當天城市抓的天氣（key 含每天的城市座標，變了才重算）
   const days = useMemo(() => {
-    if (!valid || !cache) return [];
-    const want = new Set(dayList.split(','));
-    return cache.days.filter((d) => want.has(d.date));
-  }, [valid, cache, dayList]);
+    if (!valid || !cache || !trip) return [];
+    return validWeatherDays(cache, trip);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- trip 的其他欄位（行程點內容）不影響結果
+  }, [valid, cache, key]);
 
   const byDate = useMemo(() => new Map(days.map((d) => [d.date, d])), [days]);
   const forDate = useCallback((d: ISODate) => byDate.get(d), [byDate]);
@@ -162,7 +231,7 @@ export function useTripWeather(trip: Trip | null): TripWeather {
   }, [id]);
 
   // 第一次 render（effect 還沒跑）時，若接下來一定會連線，就先顯示載入中，避免閃一下「沒有資料」
-  const willLoad = !!trip && (!geo ? !!trip.city.trim() : !valid && !!dayList);
+  const willLoad = !!trip && (!geo ? hasAnyCity(trip) : !valid && !!dayList);
   return {
     days,
     loading: status ? status.loading : willLoad,
@@ -177,8 +246,8 @@ export function useTripWeather(trip: Trip | null): TripWeather {
 /* 行程點定位                                                          */
 /* ------------------------------------------------------------------ */
 
-const itemSig = (tripId: string, it: Pick<Item, 'id' | 'address' | 'title' | 'link'>) =>
-  [tripId, it.id, it.address ?? '', it.title, it.link ?? ''].join('\u0001');
+const itemSig = (tripId: string, it: Pick<Item, 'id' | 'address' | 'title' | 'link' | 'place'>) =>
+  [tripId, it.id, it.address ?? '', it.title, it.link ?? '', it.place?.query ?? ''].join('\u0001');
 
 /** 還沒有座標、而且還沒查過失敗的行程點 */
 const todoItems = (trip: Trip) => trip.items.filter((it) => canGeocode(it) && !geoFailed.has(itemSig(trip.id, it)));

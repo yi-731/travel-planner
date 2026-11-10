@@ -1,23 +1,41 @@
 /**
  * 地點頁：單一行程點的詳情。
- * 頂部是依類型上色的光球＋霧面玻璃標題卡，下面依序是：四個前往動作、資訊清單、口碑連結；
+ * 頂部是依類型上色的光球＋霧面玻璃標題卡（天氣是這天所在城市的），下面依序是：四個前往動作、資訊清單、口碑連結；
  * 底部固定「標記完成」與「編輯」。
+ * 資訊清單第一列是「導航目的地」（含城市背景，導航按鈕就是用它），可以直接修改成手動的目的地；
+ * 沒有特定地點的行程點（起床、整理）導航按鈕會停用並說明。
  */
 import { motion, useReducedMotion } from 'motion/react';
-import type { CSSProperties, ReactNode } from 'react';
+import { useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
 import { itemType } from '@/domain/constants';
 import { fmtMD, tripDays, weekday } from '@/domain/dates';
 import { fmtMoney, toHome } from '@/domain/money';
-import { daySegments, itemsOfDay, placeQuery } from '@/domain/schedule';
+import { canNavigate, daySegments, itemsOfDay } from '@/domain/schedule';
 import type { DailyWeather, Item, Trip } from '@/domain/types';
+import { cardInfo, navQuery, routeText } from '@/features/plan/model';
 import { haptic } from '@/platform';
 import { useTripWeather } from '@/services/hooks';
 import { appleMapsNavigate, gmapsNavigate, gmapsTraffic, googleCalendar, socialLinks } from '@/services/links';
+import { dayMetaFor } from '@/services/places';
 import { weatherInfo } from '@/services/weather';
 import { useActiveTrip, useData } from '@/store';
 import { useUI } from '@/store/ui';
 import { Button, Chip, Empty, Icon, Orb, Sheet, type IconName } from '@/ui';
-import { factsHint, fmtDuration, fmtRating, linkHost, normalizeUrl, placeMeta, placeSocials, ratingPct, timeRange } from './model';
+import {
+  clearPlacePatch,
+  factsHint,
+  fmtDuration,
+  fmtRating,
+  linkHost,
+  manualPlacePatch,
+  normalizeUrl,
+  PLACE_SOURCE_LABEL,
+  placeMeta,
+  placeSocials,
+  ratingPct,
+  timeRange,
+} from './model';
+import { refreshRulePlace } from './rulePlace';
 import s from './place.module.css';
 
 /** 服務還在開發或出錯時不要讓整頁壞掉 */
@@ -63,7 +81,11 @@ function PlaceBody({ trip, item, wx }: { trip: Trip; item: Item; wx: DailyWeathe
   const toggleDone = useData((st) => st.toggleDone);
 
   const type = itemType(item.type);
-  const q = placeQuery(item);
+  // 導航目的地（地點辨識的含城市背景的目的地優先；地址是貼上的網址時改用座標）
+  const q = navQuery(item);
+  // 起床、整理這類沒有特定地點的：不能導航
+  const navOk = canNavigate(item);
+  const noNavHint = '這一站沒有特定地點';
   const days = tripDays(trip);
   const dayNo = item.date ? days.indexOf(item.date) + 1 : 0;
 
@@ -72,10 +94,15 @@ function PlaceBody({ trip, item, wx }: { trip: Trip; item: Item; wx: DailyWeathe
   const k = sameDay.findIndex((i) => i.id === item.id);
   const prev = k > 0 ? sameDay[k - 1] : null;
   const tight = prev && item.date ? attempt(() => daySegments(trip, item.date as string).some((g) => g.to.id === item.id && g.tight), false) : false;
-  const cal = attempt(() => googleCalendar(trip, item), null);
+  // 多城市行程：日曆時區、口碑搜尋都用這天所在的城市
+  const day = attempt(() => dayMetaFor(trip, item.date), undefined);
+  const dayGeo = day?.geo;
+  const cal = attempt(() => googleCalendar({ name: trip.name, cityGeo: dayGeo?.timezone ? dayGeo : trip.cityGeo }, item), null);
 
   const meta = placeMeta(dayNo, item.date ? fmtMD(item.date) : '', item.date ? weekday(item.date) : '', item.time);
-  const socials = placeSocials(item.type, attempt(() => socialLinks(trip.cityGeo?.label || trip.city, item), []));
+  const searchCity = dayGeo?.label || day?.city || trip.cityGeo?.label || trip.city;
+  // 沒有特定地點的（起床、整理）不用查口碑
+  const socials = navOk ? placeSocials(item.type, attempt(() => socialLinks(searchCity, item), [])) : [];
 
   const toggle = () => {
     const willBeDone = !item.done;
@@ -131,7 +158,7 @@ function PlaceBody({ trip, item, wx }: { trip: Trip; item: Item; wx: DailyWeathe
           <Orb size={150} className={s.tint} style={{ right: -26, top: -40 }} />
           <div className={s.glass}>
             <div className={s.heroTop}>
-              <Chip color={type.color}>{type.label}</Chip>
+              <Chip color={type.color}>{cardInfo(item).tag}</Chip>
               {item.done && (
                 <span className={s.doneBadge}>
                   <Icon name="check" size={12} stroke={2.8} />
@@ -150,8 +177,8 @@ function PlaceBody({ trip, item, wx }: { trip: Trip; item: Item; wx: DailyWeathe
 
       {/* 四個前往動作 */}
       <motion.nav className={s.actions} aria-label="前往這裡" {...enter(1)}>
-        <Action href={gmapsNavigate(q)} icon="navigate" label="導航" primary />
-        <Action href={appleMapsNavigate(q)} icon="map" label="Apple 地圖" />
+        <Action href={gmapsNavigate(q)} icon="navigate" label="導航" primary disabled={!navOk} hint={navOk ? undefined : noNavHint} />
+        <Action href={appleMapsNavigate(q)} icon="map" label="Apple 地圖" disabled={!navOk} hint={navOk ? undefined : noNavHint} />
         {prev ? (
           <Action
             icon="traffic"
@@ -165,6 +192,9 @@ function PlaceBody({ trip, item, wx }: { trip: Trip; item: Item; wx: DailyWeathe
         )}
         <Action href={cal ?? undefined} icon="calendar" label="日曆" hint={cal ? '加到 Google 日曆' : '排好日期後才能加到日曆'} disabled={!cal} />
       </motion.nav>
+      {!navOk && (
+        <p className={s.noNav}>這一站沒有特定地點（例如起床、整理），所以不能導航。需要的話，在下面的「導航目的地」設定要去哪裡。</p>
+      )}
 
       {/* 資訊 */}
       <motion.div {...enter(2)}>
@@ -197,8 +227,12 @@ function WeatherPill({ wx }: { wx: DailyWeather }) {
     icon: 'cloud' as IconName,
   });
   return (
-    <span className={s.wx} aria-label={`${info.label} ${Math.round(wx.tMin)} 到 ${Math.round(wx.tMax)} 度${wx.kind === 'climate' ? '（歷年平均）' : ''}`}>
+    <span
+      className={s.wx}
+      aria-label={`${wx.place ? `${wx.place} ` : ''}${info.label} ${Math.round(wx.tMin)} 到 ${Math.round(wx.tMax)} 度${wx.kind === 'climate' ? '（歷年平均）' : ''}`}
+    >
       <Icon name={info.icon} size={14} stroke={2.2} />
+      {wx.place && <span className={s.wxPlace}>{wx.place}</span>}
       <span className="num">
         {Math.round(wx.tMin)}°–{Math.round(wx.tMax)}°
       </span>
@@ -265,6 +299,8 @@ function Action({ icon, label, href, onClick, primary, warn, disabled, hint }: A
 interface Fact {
   key: string;
   label: string;
+  /** 標籤旁的小標籤（導航目的地的來源） */
+  badge?: ReactNode;
   value: ReactNode;
   action?: ReactNode;
 }
@@ -272,6 +308,8 @@ interface Fact {
 function Facts({ trip, item }: { trip: Trip; item: Item }) {
   const toast = useUI((st) => st.toast);
   const openSheet = useUI((st) => st.openSheet);
+  const upsertItem = useData((st) => st.upsertItem);
+  const [editing, setEditing] = useState(false);
 
   const copy = async (text: string) => {
     try {
@@ -284,8 +322,69 @@ function Facts({ trip, item }: { trip: Trip; item: Item }) {
   };
 
   const facts: Fact[] = [];
-  const address = item.address?.trim();
-  if (address)
+
+  // 導航目的地：導航按鈕用的就是這段文字（含城市、州、國家），可以直接改成手動的
+  const navOk = canNavigate(item);
+  const dest = navQuery(item);
+  const address = item.address?.trim() ?? '';
+  const sameAsAddress = navOk && !!address && dest === address;
+  const saveDest = (text: string) => {
+    const patch = manualPlacePatch(item, text);
+    if (patch) {
+      upsertItem(trip.id, patch);
+      void haptic('success');
+      toast('已更新導航目的地', 'good');
+    }
+    setEditing(false);
+  };
+  const resetDest = () => {
+    upsertItem(trip.id, clearPlacePatch(item));
+    refreshRulePlace(trip.id, item.id, null);
+    void haptic('success');
+    toast('已改回自動辨識');
+    setEditing(false);
+  };
+  facts.push({
+    key: 'dest',
+    label: '導航目的地',
+    badge: item.place ? <span className={s.srcBadge}>{PLACE_SOURCE_LABEL[item.place.source] ?? '自動辨識'}</span> : undefined,
+    value: editing ? (
+      <DestEditor
+        initial={item.place?.source === 'manual' || navOk ? dest : ''}
+        manual={item.place?.source === 'manual'}
+        onSave={saveDest}
+        onCancel={() => setEditing(false)}
+        onReset={resetDest}
+      />
+    ) : navOk ? (
+      <span className={s.selectable}>{dest}</span>
+    ) : (
+      <span className={s.soft}>沒有特定地點，不需要導航</span>
+    ),
+    action: editing ? undefined : (
+      <span className={s.factBtns}>
+        {/* 目的地就是地址（沒有城市背景的行程）：地址那一列不重複，複製放這裡 */}
+        {sameAsAddress && (
+          <button type="button" className={s.factBtn} onClick={() => void copy(address)} aria-label="複製地址">
+            複製
+          </button>
+        )}
+        <button
+          type="button"
+          className={s.factBtn}
+          onClick={() => {
+            void haptic('light');
+            setEditing(true);
+          }}
+          aria-label={navOk ? '修改導航目的地' : '設定導航目的地'}
+        >
+          {navOk ? '修改' : '設定'}
+        </button>
+      </span>
+    ),
+  });
+
+  if (address && !sameAsAddress)
     facts.push({
       key: 'address',
       label: '地址',
@@ -296,6 +395,11 @@ function Facts({ trip, item }: { trip: Trip; item: Item }) {
         </button>
       ),
     });
+
+  const route = routeText(item.route);
+  if (route) facts.push({ key: 'route', label: '路線', value: <span className="num">{route}</span> });
+  const transit = item.transit?.trim();
+  if (transit) facts.push({ key: 'transit', label: '交通', value: <span className="num">{transit}</span> });
 
   // 只有開始時間時，標題卡已經寫了，不再重複；有停留時間才多出結束時間與「停留 X」
   const range = timeRange(item);
@@ -371,27 +475,85 @@ function Facts({ trip, item }: { trip: Trip; item: Item }) {
       ),
     });
 
-  if (!facts.length)
-    return (
-      <div className={s.factsEmpty}>
-        <span>{factsHint(item)}</span>
-        <Button variant="soft" size="sm" icon="edit" onClick={() => openSheet({ name: 'itemForm', itemId: item.id })}>
-          補上資訊
-        </Button>
-      </div>
-    );
+  // 只有導航目的地（其他都沒填）：下面再放一張提示補資訊的卡片（沒有特定地點的不用補）
+  const onlyDest = facts.length === 1 && navOk;
 
   return (
-    <dl className={s.facts}>
-      {facts.map((f) => (
-        <div key={f.key} className={s.fact}>
-          <dt className={s.factLabel}>{f.label}</dt>
-          <dd className={s.factValue}>
-            <span className={s.factText}>{f.value}</span>
-            {f.action}
-          </dd>
+    <div className={s.factsWrap}>
+      <dl className={s.facts}>
+        {facts.map((f) => (
+          <div key={f.key} className={s.fact}>
+            <dt className={s.factLabel}>
+              {f.label}
+              {f.badge}
+            </dt>
+            <dd className={s.factValue}>
+              <span className={s.factText}>{f.value}</span>
+              {f.action}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {onlyDest && (
+        <div className={s.factsEmpty}>
+          <span>{factsHint(item)}</span>
+          <Button variant="soft" size="sm" icon="edit" onClick={() => openSheet({ name: 'itemForm', itemId: item.id })}>
+            補上資訊
+          </Button>
         </div>
-      ))}
-    </dl>
+      )}
+    </div>
+  );
+}
+
+/** 導航目的地的就地編輯：輸入框＋取消／儲存；目前是手動的，多一個「改回自動辨識」 */
+function DestEditor({
+  initial,
+  manual,
+  onSave,
+  onCancel,
+  onReset,
+}: {
+  initial: string;
+  manual: boolean;
+  onSave: (text: string) => void;
+  onCancel: () => void;
+  onReset: () => void;
+}) {
+  const [text, setText] = useState(initial);
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    onSave(text);
+  };
+  return (
+    <form className={s.destEdit} onSubmit={submit}>
+      <input
+        className={s.destInput}
+        value={text}
+        autoFocus
+        autoComplete="off"
+        autoCapitalize="off"
+        enterKeyHint="done"
+        maxLength={200}
+        aria-label="導航目的地"
+        placeholder="例如：清水寺, 京都"
+        onChange={(e) => setText(e.target.value)}
+      />
+      <span className={s.destHint}>寫店名或地址，再加上城市（必要時加國家），Google 地圖比較不會找錯。</span>
+      <span className={s.destBtns}>
+        {manual && (
+          <button type="button" className={s.destLink} onClick={onReset}>
+            改回自動辨識
+          </button>
+        )}
+        <span className={s.destSpacer} />
+        <button type="button" className={s.factBtn} onClick={onCancel}>
+          取消
+        </button>
+        <button type="submit" className={`${s.factBtn} ${s.factBtnGo}`} disabled={!text.trim()}>
+          儲存
+        </button>
+      </span>
+    </form>
   );
 }

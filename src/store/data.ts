@@ -57,6 +57,8 @@ export const defaultSettings: Settings = {
   reminders: false,
   reminderLeadMin: 15,
   defaultHomeCurrency: 'TWD',
+  aiTripBudgetTwd: 200,
+  aiAutoResolvePlaces: true,
 };
 
 export function newTrip(init: Partial<Trip> & Pick<Trip, 'name'>, settings: Settings = defaultSettings): Trip {

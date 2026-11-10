@@ -5,7 +5,10 @@ import {
   cityCurrency,
   countsText,
   currencyHint,
+  dayRows,
+  dayRowText,
   errorText,
+  flagCounts,
   fmtSynced,
   guessLocalCurrency,
   newTripDraft,
@@ -14,6 +17,7 @@ import {
   removedCount,
   resolveNewTrip,
   shortName,
+  shouldAutoResolve,
 } from './model';
 
 describe('importer model', () => {
@@ -133,5 +137,78 @@ describe('建立新行程的當地貨幣', () => {
     expect(cityCurrency('臺北市')).toBe('TWD');
     expect(cityCurrency('火星')).toBeNull();
     expect(cityCurrency('')).toBeNull();
+  });
+});
+
+describe('新行程的當地貨幣：行程點的預估花費也算試算表寫明的', () => {
+  const parser = (raw: RawSheets) => (local: string | undefined) => interpretSheets(raw, { name: '', startDate: null, localCurrency: local });
+  const base = (localCurrency: string): Trip => ({
+    id: 't-new', name: '', city: '', startDate: null, endDate: null, localCurrency, homeCurrency: 'TWD', rate: 1,
+    members: ['我'], items: [], expenses: [], cover: { kind: 'orb', hue: 0 }, ai: { dayChecks: {} }, createdAt: 1, updatedAt: 1,
+  });
+  const plan = (costs: string[]) => ({ 行程: [['日期', '行程', '預估花費'], ...costs.map((c, k) => ['11/21', `站${k}`, c])] });
+
+  it('「$25」「$59.99+稅」→ 美金，金額照記', () => {
+    const d = newTripDraft(parser(plan(['$25–35', '$59.99+稅', '已訂', '300'])), 'TWD', 'JPY');
+    expect(pickNewTripCurrency(d, '')).toMatchObject({ code: 'USD', from: 'sheet' });
+    const { localCurrency, result } = resolveNewTrip(d, '');
+    const t = applyImport(base(localCurrency), result, 'new');
+    expect(t.localCurrency).toBe('USD');
+    expect(t.items.map((i) => i.cost)).toEqual([25, 59.99, undefined, 300]);
+    expect(currencyHint(d, '')).toBe('當地貨幣：USD 美元（依試算表）。');
+  });
+
+  it('只寫「¥」的花費：城市在中國算人民幣', () => {
+    const d = newTripDraft(parser(plan(['¥88', '¥120'])), 'TWD', undefined);
+    expect(pickNewTripCurrency(d, '')).toMatchObject({ code: 'JPY', from: 'sheet' });
+    const sh = resolveNewTrip(d, '上海');
+    expect(sh.localCurrency).toBe('CNY');
+    const t = applyImport(base(sh.localCurrency), sh.result, 'new');
+    expect(t.localCurrency).toBe('CNY');
+    expect(t.items.map((i) => i.cost)).toEqual([88, 120]);
+  });
+
+  it('本國貨幣的花費不決定當地貨幣', () => {
+    const d = newTripDraft(parser(plan(['NT$300'])), 'TWD', 'JPY');
+    expect(pickNewTripCurrency(d, '首爾')).toMatchObject({ code: 'KRW', from: 'city' });
+  });
+});
+
+describe('地點辨識預覽', () => {
+  it('每天的城市與住宿（依日期排序；「第 N 天」排後面；認不出城市顯示原文）', () => {
+    const rows = dayRows({
+      days: {
+        '2027-03-09': { label: '西雅圖 → 波特蘭｜住 Harbor Inn｜演唱會', cities: ['西雅圖', '波特蘭'], city: '波特蘭', lodging: 'Harbor Inn' },
+        '2027-03-08': { label: '台北 → 西雅圖｜住 Hotel Zephyr', cities: ['台北', '西雅圖'], city: '西雅圖', lodging: 'Hotel Zephyr' },
+        __D2: { label: '雷尼爾山一日遊｜健行' },
+        '2027-03-10': { label: '波特蘭', city: '波特蘭' },
+      },
+    });
+    expect(rows.map((d) => [d.date, dayRowText(d)])).toEqual([
+      ['3/8', '台北 → 西雅圖 · 住 Hotel Zephyr'],
+      ['3/9', '西雅圖 → 波特蘭 · 住 Harbor Inn'],
+      ['3/10', '波特蘭'],
+      ['第 2 天', '雷尼爾山一日遊 · 健行'],
+    ]);
+    expect(dayRows({})).toEqual([]);
+  });
+
+  it('必做／可省略數量', () => {
+    const items = [{ flag: 'must' }, { flag: 'must' }, { flag: 'optional' }, {}] as never[];
+    expect(flagCounts({ items })).toEqual({ must: 2, optional: 1 });
+  });
+
+  it('匯入後自動用 AI 辨識地點的條件', () => {
+    const on = { aiAutoResolvePlaces: true };
+    const fresh = { items: [{ place: { query: 'x', source: 'rule' } }, {}] } as never;
+    const done = { items: [{ place: { query: 'x', source: 'ai' } }, { place: { query: 'y', source: 'manual' } }] } as never;
+    const ok = { exceeded: false };
+    expect(shouldAutoResolve(fresh, on, true, ok)).toBe(true);
+    expect(shouldAutoResolve(fresh, { aiAutoResolvePlaces: false }, true, ok)).toBe(false);
+    expect(shouldAutoResolve(fresh, on, false, ok)).toBe(false);
+    expect(shouldAutoResolve(fresh, on, true, { exceeded: true })).toBe(false);
+    expect(shouldAutoResolve(fresh, on, true, null)).toBe(false);
+    expect(shouldAutoResolve(done, on, true, ok)).toBe(false);
+    expect(shouldAutoResolve(undefined, on, true, ok)).toBe(false);
   });
 });

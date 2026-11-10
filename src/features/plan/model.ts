@@ -2,10 +2,12 @@
  * 行程分頁用的純邏輯：選哪一天、標題列文字、移動資訊的文字與圖示、表單欄位解析。
  * 沒有 React，方便寫測試（model.test.ts）。改行程頁顯示規則時先改這裡。
  */
+import { itemType } from '@/domain/constants';
 import { fmtDayNo, fmtMD, fromMinutes, toMinutes, weekday } from '@/domain/dates';
 import { fmtMoney } from '@/domain/money';
-import { placeQuery, type SegmentInfo } from '@/domain/schedule';
-import type { ISODate, Item, LatLng } from '@/domain/types';
+import { canNavigate, placeQuery, type SegmentInfo } from '@/domain/schedule';
+import type { DayMeta, ISODate, Item, LatLng } from '@/domain/types';
+import { countryName, findCityAlias, HAS_CJK } from '@/services/weather';
 import type { IconName } from '@/ui/Icon';
 
 /* ---------------- 日期 ---------------- */
@@ -145,11 +147,153 @@ export function tightDetail(
   return { leaveAt: fromMinutes(leave), arriveAt: fromMinutes(arrive), lateMin: arrive - e };
 }
 
-/** 導航用的地點字串：地址若是貼上的網址，改用座標或名稱 */
-export function navQuery(it: Pick<Item, 'address' | 'title' | 'geo'>): string {
+/** 導航用的地點字串：地點辨識的目的地優先；地址若是貼上的網址，改用座標或名稱 */
+export function navQuery(it: Pick<Item, 'address' | 'title' | 'geo' | 'place'>): string {
   const addr = (it.address ?? '').trim();
-  if (/^https?:\/\//i.test(addr)) return it.geo ? `${it.geo.lat},${it.geo.lng}` : it.title.trim();
+  if (!it.place?.query?.trim() && /^https?:\/\//i.test(addr)) return it.geo ? `${it.geo.lat},${it.geo.lng}` : it.title.trim();
   return placeQuery(it);
+}
+
+/**
+ * 「移動」頁的 Google 地圖路線：終點沒有特定地點（休息、整理）回傳 null；
+ * 起點沒有特定地點（起床）就從目前位置出發，不把「起床」當地址。
+ */
+export function segmentRoute(
+  from: Pick<Item, 'address' | 'title' | 'geo' | 'place'>,
+  to: Pick<Item, 'address' | 'title' | 'geo' | 'place'>,
+): { origin: string | null; dest: string } | null {
+  if (!canNavigate(to)) return null;
+  return { origin: canNavigate(from) ? navQuery(from) : null, dest: navQuery(to) };
+}
+
+/* ---------------- 卡片 ---------------- */
+
+/** 'LAX → LAS'；只有一端時 '→ Hilltop Observatory'／'Hotel Zephyr →' */
+export function routeText(route: Item['route'] | undefined): string {
+  const from = (route?.from ?? '').trim(), to = (route?.to ?? '').trim();
+  if (!from && !to) return '';
+  if (!from) return `→ ${to}`;
+  if (!to) return `${from} →`;
+  return `${from} → ${to}`;
+}
+
+const squashLower = (s: string) => s.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+/** 標題裡已經寫了（「Delta LAX → LAS」的路線、「步行 10 分」的交通）就不再重複 */
+const inTitle = (title: string, text: string) => !!text && squashLower(title).includes(squashLower(text));
+
+export interface CardInfo {
+  /** 類型旁邊的文字：使用者自己的分類（演唱會、早餐），沒有就用標準類型名稱 */
+  tag: string;
+  flag?: 'must' | 'optional';
+  /** 第二行小字：路線與交通說明（「LAX → LAS · Uber 30 分」）；沒有就是空字串 */
+  line: string;
+}
+
+/** 分類文字太長時截短（卡片上只放得下幾個字） */
+export const MAX_TAG_CHARS = 8;
+
+/** 行程卡片的分類、必做／可省略、路線與交通 */
+export function cardInfo(it: Pick<Item, 'type' | 'tag' | 'flag' | 'route' | 'transit' | 'title'>): CardInfo {
+  const raw = (it.tag ?? '').trim().replace(/\s+/g, ' ');
+  const chars = [...raw];
+  const tag = !raw ? itemType(it.type).label : chars.length > MAX_TAG_CHARS ? `${chars.slice(0, MAX_TAG_CHARS - 1).join('')}…` : raw;
+  const route = routeText(it.route);
+  const r = route && !(inTitle(it.title, (it.route?.from ?? '').trim()) && inTitle(it.title, (it.route?.to ?? '').trim())) ? route : '';
+  const tr = (it.transit ?? '').trim().replace(/\s+/g, ' ');
+  const transit = tr && tr !== r && !inTitle(it.title, tr) ? tr : '';
+  return { tag, ...(it.flag ? { flag: it.flag } : {}), line: [r, transit].filter(Boolean).join(' · ') };
+}
+
+/* ---------------- 當天背景（城市、住宿） ---------------- */
+
+export interface DayHeader {
+  /** 當天城市（顯示用）；不知道時是空字串 */
+  city: string;
+  /** 住宿名稱（「住 Harbor Inn」的 Harbor Inn） */
+  lodging: string;
+}
+
+export function dayHeader(meta: Pick<DayMeta, 'city' | 'lodging'> | undefined): DayHeader {
+  return { city: (meta?.city ?? '').trim(), lodging: (meta?.lodging ?? '').trim() };
+}
+
+const normCity = (s: string | undefined) => (s ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+
+/**
+ * 「這一天」彈出頁儲存：使用者填的城市／住宿 → 這天新的 DayMeta（source = manual，不會再被自動辨識覆蓋）。
+ * own：trip.days[date] 本身（可能沒有）；shown：畫面上顯示的（沒有自己的城市時是沿用前一天的）。
+ * 城市沒改就沿用原本的座標；改了就清掉座標，讓天氣、導航重新定位。都沒改回傳 null。
+ */
+export function editDayMeta(
+  own: DayMeta | undefined,
+  shown: DayMeta | undefined,
+  input: { city: string; lodging: string },
+): DayMeta | null {
+  const city = input.city.trim().replace(/\s+/g, ' ');
+  const lodging = input.lodging.trim().replace(/\s+/g, ' ');
+  const shownCity = (shown?.city ?? '').trim();
+  const shownLodging = (shown?.lodging ?? '').trim();
+  if (city === shownCity && lodging === shownLodging) return null;
+  const next: DayMeta = { ...(own ?? {}), source: 'manual' };
+  if (city) next.city = city;
+  else delete next.city;
+  if (lodging) next.lodging = lodging;
+  else delete next.lodging;
+  const geo = city && normCity(city) === normCity(shownCity) ? (own?.geo ?? shown?.geo) : undefined;
+  if (geo) next.geo = geo;
+  else delete next.geo;
+  return next;
+}
+
+/**
+ * 重新辨識地點後：導航目的地變了的行程點，原本用舊目的地查到的座標（geocode）不再可信 → 清掉讓地圖重新定位。
+ * 來自地圖連結、手動的座標保留。回傳新的陣列（沒變的行程點維持同一個物件）。
+ */
+export function dropStaleGeo(before: Item[], after: Item[]): Item[] {
+  const old = new Map(before.map((it) => [it.id, it]));
+  return after.map((it) => {
+    const prev = old.get(it.id);
+    if (!prev || !it.geo || it.geo.source !== 'geocode') return it;
+    if ((prev.place?.query ?? '') === (it.place?.query ?? '')) return it;
+    const next = { ...it };
+    delete next.geo;
+    return next;
+  });
+}
+
+export interface CityFeedback {
+  tone: 'ok' | 'warn' | 'info';
+  text: string;
+}
+
+/** 'Las Vegas · Nevada · 美國' */
+export function geoLine(geo: DayMeta['geo'] | undefined): string {
+  if (!geo) return '';
+  const name = geo.en?.trim() || geo.label?.split(/[，,]/)[0]?.trim() || '';
+  const country = countryName(geo.countryCode);
+  const admin = geo.admin1?.trim();
+  return [name, admin && admin !== name ? admin : '', country && country !== name ? country : ''].filter(Boolean).join(' · ');
+}
+
+/**
+ * 城市欄下方的即時說明：認得這個城市嗎？會定位到哪裡？
+ * 中文城市名不在對照表時，Open-Meteo 常查不到（或查到同名的湖），提醒改用英文。
+ */
+export function cityFeedback(input: string, shown: Pick<DayMeta, 'city' | 'geo'> | undefined): CityFeedback {
+  const city = input.trim();
+  if (!city) return { tone: 'info', text: '留空＝沿用前一天（或行程設定）的城市。' };
+  if (normCity(city) === normCity(shown?.city)) {
+    const line = geoLine(shown?.geo);
+    if (line) return { tone: 'ok', text: `已定位：${line}` };
+  }
+  const a = findCityAlias(city);
+  if (a) {
+    const country = countryName(a.cc);
+    const where = [a.en, a.admin1, country].filter(Boolean).join(' · ');
+    return { tone: 'ok', text: normCity(city) === normCity(shown?.city) ? `認得：${where}，連上網路後會自動定位。` : `認得：${where}。儲存後會重新定位。` };
+  }
+  if (HAS_CJK.test(city)) return { tone: 'warn', text: '城市對照表裡沒有這個中文名稱，可能查不到天氣。建議改用英文，例如 Kyoto。' };
+  return { tone: 'info', text: '儲存後會用這個名稱查詢城市位置。' };
 }
 
 /* ---------------- 表單 ---------------- */
@@ -177,6 +321,14 @@ export interface ItemDraft {
   rating: string;
   link: string;
   note: string;
+  /** 手動指定的導航目的地；空白＝自動辨識 */
+  placeQuery: string;
+  /** 自己的分類文字（演唱會、早餐） */
+  tag: string;
+  /** 交通說明（步行 15 分） */
+  transit: string;
+  /** '' = 一般 */
+  flag: '' | 'must' | 'optional';
 }
 
 export type DraftErrors = Partial<Record<keyof ItemDraft, string>>;
@@ -192,6 +344,10 @@ export const emptyDraft = (date: ISODate | null): ItemDraft => ({
   rating: '',
   link: '',
   note: '',
+  placeQuery: '',
+  tag: '',
+  transit: '',
+  flag: '',
 });
 
 export const draftFromItem = (it: Item): ItemDraft => ({
@@ -205,7 +361,23 @@ export const draftFromItem = (it: Item): ItemDraft => ({
   rating: it.rating != null ? String(it.rating) : '',
   link: it.link ?? '',
   note: it.note ?? '',
+  placeQuery: it.place?.source === 'manual' ? it.place.query : '',
+  tag: it.tag ?? '',
+  transit: it.transit ?? '',
+  flag: it.flag ?? '',
 });
+
+/** 表單「進階」欄位有沒有填（收合時顯示摘要、決定要不要預設展開） */
+export function advancedSummary(d: Pick<ItemDraft, 'placeQuery' | 'tag' | 'transit' | 'flag'>): string {
+  return [
+    d.flag === 'must' ? '必做' : d.flag === 'optional' ? '可省略' : '',
+    d.tag.trim(),
+    d.transit.trim(),
+    d.placeQuery.trim() ? '自訂導航目的地' : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
 
 export function validateDraft(d: ItemDraft): DraftErrors {
   const err: DraftErrors = {};
@@ -246,13 +418,28 @@ export function draftToPatch(d: ItemDraft, original: Item | null, parseLink: (s:
   const addrChanged = (original?.address ?? '') !== (address ?? '');
   const titleChanged = (original?.title ?? '') !== d.title.trim();
   const linkChanged = (original?.link ?? '') !== (link ?? '');
+  const dateChanged = !!original && (original.date ?? '') !== d.date;
+
+  // 導航目的地：手動填的優先；清空手動的＝改回自動辨識；
+  // 地址、名稱或日期（城市可能不同）改了，原本自動辨識／AI 的目的地不再適用，清掉後由呼叫端重新辨識
+  const manualQ = opt(d.placeQuery);
+  const wasManual = original?.place?.source === 'manual';
+  let place: Item['place'];
+  if (manualQ) place = wasManual && original?.place?.query === manualQ ? original.place : { query: manualQ, source: 'manual', navigable: true };
+  else if (wasManual) place = undefined;
+  else if (original?.place && !addrChanged && !titleChanged && !dateChanged) place = original.place;
+  else place = undefined;
+  const placeChanged = (original?.place?.query ?? '') !== (place?.query ?? '');
+
   // 舊座標是從（已改掉的）連結來的：連結換了就不再可信
   const geoFromOldLink = !!original?.geo && original.geo.source === 'link' && !safeParse(original.address);
+  // 舊座標是用舊的導航目的地查到的：目的地換了就重新定位
+  const geoFromOldPlace = !!original?.geo && original.geo.source === 'geocode' && placeChanged;
   let geo: Item['geo'];
   // 1. 地址欄貼的地圖連結最優先 2. 連結欄剛換成地圖連結 3. 沿用舊座標 4. 連結（沒有就清掉，讓地圖重新定位）
   if (fromAddr) geo = { ...fromAddr, source: 'link' };
   else if (linkChanged && fromLink) geo = { ...fromLink, source: 'link' };
-  else if (original?.geo && !addrChanged && !(titleChanged && !address) && !(linkChanged && geoFromOldLink)) geo = original.geo;
+  else if (original?.geo && !addrChanged && !(titleChanged && !address) && !(linkChanged && geoFromOldLink) && !geoFromOldPlace) geo = original.geo;
   else geo = fromLink ? { ...fromLink, source: 'link' } : undefined;
   const dur = num(d.durationMin);
   return {
@@ -270,5 +457,9 @@ export function draftToPatch(d: ItemDraft, original: Item | null, parseLink: (s:
     rating: num(d.rating),
     link,
     note: opt(d.note),
+    place,
+    tag: opt(d.tag),
+    transit: opt(d.transit),
+    flag: d.flag || undefined,
   };
 }

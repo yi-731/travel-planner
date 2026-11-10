@@ -9,6 +9,7 @@ import { useEffect, useRef, useState, type DragEvent } from 'react';
 import type { Trip } from '@/domain/types';
 import { enrichNewTrip } from '@/features/trips/enrich';
 import { exportFile, haptic, pickFile } from '@/platform';
+import { aiBudget, aiReady } from '@/services/ai';
 import { templateXlsx } from '@/services/exporter';
 import { applyImport, interpretSheets, readPastedText, readSpreadsheetFile, type ImportMode, type ImportResult, type RawSheets } from '@/services/importer';
 import { fetchGoogleSheet } from '@/services/sheets';
@@ -17,7 +18,18 @@ import { useUI } from '@/store/ui';
 import { Button, Icon, Note, Orb, Picker, Sheet, Spinner, TextArea, TextInput, type PickOption } from '@/ui';
 import { FormatHelp } from './FormatHelp';
 import { ImportPreview, type CreateOptions } from './ImportPreview';
-import { countsText, errorText, fmtSynced, newTripDraft, removedCount, resolveNewTrip, shortName, type NewTripDraft } from './model';
+import {
+  AI_PLACES_COST_HINT,
+  countsText,
+  errorText,
+  fmtSynced,
+  newTripDraft,
+  removedCount,
+  resolveNewTrip,
+  shortName,
+  shouldAutoResolve,
+  type NewTripDraft,
+} from './model';
 import s from './importer.module.css';
 
 type Source = 'google' | 'file' | 'paste';
@@ -56,6 +68,36 @@ interface PreviewState {
 }
 
 let previewSeq = 1;
+
+/**
+ * 匯入／同步完成後，在背景用 AI 辨識地點（設定開著、有金鑰、本趟預算沒用完、有還沒辨識過的行程點）。
+ * 不等它完成；有開始就回傳 true（呼叫端在提示裡說一聲）。AI 失敗不影響匯入結果（規則版的導航目的地已經有了）。
+ */
+function startAutoResolve(tripId: string): boolean {
+  try {
+    const st = useData.getState();
+    const trip = st.trips[tripId];
+    const ready = aiReady();
+    let budget: { exceeded: boolean } | null = null;
+    try {
+      budget = trip && ready ? aiBudget(trip) : null;
+    } catch {
+      budget = null;
+    }
+    if (!shouldAutoResolve(trip, st.settings, ready, budget)) return false;
+    void import('@/features/ai/useResolvePlaces')
+      .then((m) => m.runResolvePlaces(tripId))
+      .catch(() => {
+        /* AI 辨識失敗：規則版的導航目的地照常可用，之後可以在行程裡再辨識一次 */
+      });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 匯入後開始 AI 辨識時的提示 */
+const AI_TOAST = `已匯入，AI 正在辨識地點（${AI_PLACES_COST_HINT}）`;
 
 export default function ImportSheet() {
   const trip = useActiveTrip();
@@ -183,9 +225,14 @@ export default function ImportSheet() {
       const next: Trip = { ...applyImport(cur, result, 'replace'), sheetUrl: u, sheetSyncedAt: Date.now() };
       useData.getState().replaceTrip(next);
       const removed = removedCount(cur, next);
+      const ai = startAutoResolve(tripId);
       void haptic('success');
       const ui = useUI.getState();
-      ui.toast(`已同步 ${countsText(result, '、')}${removed ? `，移除 ${removed} 個行程點` : ''}`, 'good');
+      ui.toast(
+        `已同步 ${countsText(result, '、')}${removed ? `，移除 ${removed} 個行程點` : ''}${ai ? '；AI 正在辨識新的地點' : ''}`,
+        'good',
+        ai ? 4000 : undefined,
+      );
       // 同步途中關掉了這頁：結果照樣存好、提示照樣顯示，但不要關掉之後打開的其他頁
       if (!alive.current) return;
       if (result.warnings.length) setSyncWarnings(result.warnings);
@@ -195,13 +242,16 @@ export default function ImportSheet() {
 
   /* ---------- 套用預覽 ---------- */
 
-  function finish(message: string) {
+  /** 套用完成：回到行程頁並提示；有開始 AI 辨識地點時改用 AI 的提示（讓使用者知道這會用到 AI） */
+  function finish(tripId: string, message: string) {
+    const ai = startAutoResolve(tripId);
     void haptic('success');
     const ui = useUI.getState();
     ui.selectDate(null);
     ui.closeAllSheets();
     ui.setTab('plan');
-    ui.toast(message, 'good');
+    if (ai) ui.toast(AI_TOAST, 'good', 4000);
+    else ui.toast(message, 'good');
   }
 
   const withSheet = (t: Trip, p: PreviewState): Trip => (p.source === 'google' && p.url ? { ...t, sheetUrl: p.url, sheetSyncedAt: Date.now() } : t);
@@ -218,7 +268,7 @@ export default function ImportSheet() {
       st.replaceTrip(t);
       st.setActiveTrip(t.id);
       enrichNewTrip(t.id);
-      finish(`已建立「${shortName(t.name, 12)}」：${countsText(result, '、')}`);
+      finish(t.id, `已建立「${shortName(t.name, 12)}」：${countsText(result, '、')}`);
     });
   };
 
@@ -232,7 +282,7 @@ export default function ImportSheet() {
       const r = p.forTrip ?? p.result;
       const t = withSheet(applyImport(cur, r, mode), p);
       st.replaceTrip(t);
-      finish(mode === 'replace' ? `已依試算表更新：${countsText(r, '、')}` : `已附加 ${countsText(r, '、')}`);
+      finish(cur.id, mode === 'replace' ? `已依試算表更新：${countsText(r, '、')}` : `已附加 ${countsText(r, '、')}`);
     });
   };
 

@@ -3,12 +3,13 @@ import { type ReactNode, type RefObject, useRef } from 'react';
 import { fromMinutes, type TripPhase } from '@/domain/dates';
 import { itemType } from '@/domain/constants';
 import { fmtMoney, totalHome } from '@/domain/money';
-import { placeQuery, type SegmentInfo } from '@/domain/schedule';
+import { canNavigate, type SegmentInfo } from '@/domain/schedule';
 import type { Trip } from '@/domain/types';
 import { haptic } from '@/platform';
 import { gmapsNavigate } from '@/services/links';
 import { useData } from '@/store/data';
 import { useUI } from '@/store/ui';
+import { cardInfo, navQuery, routeText } from '@/features/plan/model';
 import { Button, Chip, Icon, LinkButton, Orb, useBlobUrl } from '@/ui';
 import { leaveTone, startsIn, type NextStop } from './model';
 import s from './home.module.css';
@@ -98,6 +99,9 @@ function StopPanel({ trip, phase, next, seg, nowMin, lastDoneAt }: StopPanelProp
   const toggleDone = useData((st) => st.toggleDone);
   const { item } = next;
   const type = itemType(item.type);
+  // 起床、整理這類沒有特定地點的：不放導航，詳情改成主要按鈕
+  const navOk = canNavigate(item);
+  const sub = item.address?.trim() || routeText(item.route);
   const leaveBy = seg?.leaveBy ?? null;
   const tone = leaveTone(seg, phase.phase, nowMin);
   const soon = phase.phase === 'during' && next.status === 'next' ? startsIn(item, nowMin) : null;
@@ -132,15 +136,17 @@ function StopPanel({ trip, phase, next, seg, nowMin, lastDoneAt }: StopPanelProp
       </div>
       <div className={s.timeRow}>
         {item.time ? <span className={`serif num ${s.bigTime}`}>{item.time}</span> : <span className={s.noTime}>時間未定</span>}
-        <Chip color={type.color}>{type.label}</Chip>
+        <Chip color={type.color}>{cardInfo(item).tag}</Chip>
       </div>
       <div className={s.stopTitle}>{item.title}</div>
-      {item.address && <div className={s.stopAddr}>{item.address}</div>}
+      {sub && <div className={s.stopAddr}>{sub}</div>}
       <div className={s.actions}>
-        <LinkButton variant="go" icon="navigate" href={gmapsNavigate(placeQuery(item))}>
-          導航
-        </LinkButton>
-        <Button variant="ghost" onClick={() => openSheet({ name: 'place', itemId: item.id })}>
+        {navOk && (
+          <LinkButton variant="go" icon="navigate" href={gmapsNavigate(navQuery(item))}>
+            導航
+          </LinkButton>
+        )}
+        <Button variant={navOk ? 'ghost' : 'go'} onClick={() => openSheet({ name: 'place', itemId: item.id })}>
           詳情
         </Button>
         {phase.phase === 'during' && (

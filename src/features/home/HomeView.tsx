@@ -1,6 +1,6 @@
 /**
  * 「今天」分頁（首頁）：一眼看出下一步。
- * 由上而下：標題列（出發日／第幾天）→ 城市大字 → 主卡（下一站／回顧／空狀態）→ 三張小卡 → 當日行程。
+ * 由上而下：標題列（出發日／第幾天／當天城市或路線）→ 城市大字（旅途中是當天所在的城市）→ 主卡（下一站／回顧／空狀態）→ 三張小卡 → 當日行程。
  * 旅程結束後不顯示小卡，當日行程換成「回顧全部行程」一列。
  * 顯示規則（下一站怎麼挑、移動資訊、花費摘要）在 ./model.ts，有測試。
  */
@@ -9,16 +9,26 @@ import { type CSSProperties, useMemo } from 'react';
 import { fmtMD, tripPhase } from '@/domain/dates';
 import { daySegments, itemsOfDay } from '@/domain/schedule';
 import type { Trip } from '@/domain/types';
+import { dayMetaFor, parseDayBanner } from '@/services/places';
 import { useActiveTrip } from '@/store/data';
 import { useUI } from '@/store/ui';
 import { DayList, ReviewRow } from './DayList';
 import { HeroCard } from './HeroCard';
 import { HomeTiles } from './HomeTiles';
-import { cityFitLength, displayCity, eyebrowText, hasCJK, pickNextStop, segmentInto, showHomeTiles } from './model';
+import { cityFitLength, eyebrowPlace, eyebrowText, hasCJK, heroCity, pickNextStop, segmentInto, showHomeTiles } from './model';
 import { useNow } from './useNow';
 import s from './home.module.css';
 
 const EASE = [0.2, 0.8, 0.2, 1] as const;
+
+/** 服務還在開發或出錯時不要讓整頁壞掉 */
+function attempt<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+}
 
 export default function HomeView() {
   const trip = useActiveTrip();
@@ -43,8 +53,15 @@ function Home({ trip }: { trip: Trip }) {
   const next = pickNextStop(phase.phase, dayItems, now.minutes);
   const seg = segmentInto(segs, next?.item.id);
 
-  const city = displayCity(trip);
+  // 當天的城市（多城市行程每天不同）與日期列提到的路線
+  const dayMeta = useMemo(() => (focusDay ? attempt(() => dayMetaFor(trip, focusDay), trip.days?.[focusDay]) : undefined), [trip, focusDay]);
+  const dayCity = dayMeta?.city?.trim() || undefined;
+  const ownLabel = focusDay ? trip.days?.[focusDay]?.label : undefined;
+  const bannerCities = useMemo(() => (ownLabel ? attempt(() => parseDayBanner(ownLabel).cities, []) : []), [ownLabel]);
+
+  const city = heroCity(trip, dayCity, phase.phase);
   const cjk = hasCJK(city);
+  const where = phase.phase === 'during' ? eyebrowPlace(bannerCities, dayCity, city) : '';
   const listTitle = phase.phase === 'during' ? '今日行程' : focusDay ? `${fmtMD(focusDay)} 行程` : '尚未排日期';
 
   // 由上而下依序淡入；系統開啟「減少動態效果」時不播放
@@ -61,7 +78,7 @@ function Home({ trip }: { trip: Trip }) {
     <div className={s.home}>
       <motion.header className={s.head} {...enter(0)}>
         <div className={s.eyebrowRow}>
-          <span className="eyebrow num">{eyebrowText(phase)}</span>
+          <span className="eyebrow num">{eyebrowText(phase, where)}</span>
           {trip.isExample && <span className={s.badge}>範例</span>}
           {trip.routeCode && <span className={s.route}>{trip.routeCode}</span>}
         </div>

@@ -29,4 +29,6 @@ export const testSettings: Settings = {
   reminders: false,
   reminderLeadMin: 15,
   defaultHomeCurrency: 'TWD',
+  aiTripBudgetTwd: 200,
+  aiAutoResolvePlaces: true,
 };

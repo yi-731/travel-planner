@@ -185,6 +185,41 @@ describe('useTripWeather', () => {
     expect(r.current?.days.map((d) => d.date)).toEqual(rangeDays(NEW, addDays(NEW, 4)));
   });
 
+  it('多城市行程：先定位每天的城市（寫回 days），再依當天城市抓天氣', async () => {
+    const geoResults: Record<string, unknown> = {
+      'Los Angeles': { name: 'Los Angeles', admin1: 'California', latitude: 34.0522, longitude: -118.2437, feature_code: 'PPLA2', population: 3820914, country_code: 'US', timezone: 'America/Los_Angeles' },
+      'Las Vegas': { name: 'Las Vegas', admin1: 'Nevada', latitude: 36.175, longitude: -115.1372, feature_code: 'PPLA2', population: 641903, country_code: 'US', timezone: 'America/Los_Angeles' },
+    };
+    const calls = mockFetch((u) => {
+      if (u.host === 'geocoding-api.open-meteo.com') {
+        const r = geoResults[u.searchParams.get('name') ?? ''];
+        return { results: r ? [r] : [] };
+      }
+      const lats = (u.searchParams.get('latitude') ?? '').split(',');
+      const one = weatherRoute(u);
+      return lats.length > 1 ? lats.map(() => one) : one;
+    });
+    seedTrip('w7', {
+      city: '洛杉磯',
+      cityGeo: undefined,
+      startDate: START,
+      endDate: addDays(START, 2),
+      days: { [START]: { city: '洛杉磯' }, [addDays(START, 1)]: { city: '拉斯維加斯' }, [addDays(START, 2)]: { label: '一日遊' } },
+    });
+    const r = renderWeather('w7');
+    await waitFor(() => !!tripOf('w7').weather && r.current?.days.length === 3);
+    const t = tripOf('w7');
+    expect(t.days?.[START]?.geo).toMatchObject({ lat: 34.0522, en: 'Los Angeles', admin1: 'California' });
+    expect(t.days?.[addDays(START, 1)]?.geo).toMatchObject({ lat: 36.175, en: 'Las Vegas' });
+    // 行程城市直接沿用同城市那天的座標，不再查一次
+    expect(t.cityGeo).toMatchObject({ lat: 34.0522, lng: -118.2437 });
+    const geoCalls = calls.filter((u) => u.host === 'geocoding-api.open-meteo.com').map((u) => u.searchParams.get('name'));
+    expect(geoCalls).toEqual(['Los Angeles', 'Las Vegas']);
+    const fc = calls.filter((u) => u.host === 'api.open-meteo.com');
+    expect(fc.at(-1)?.searchParams.get('latitude')).toBe('34.0522,36.175');
+    expect(r.current?.days.map((d) => d.place)).toEqual(['洛杉磯', '拉斯維加斯', '拉斯維加斯']);
+  });
+
   it('城市換了：舊座標的天氣不顯示', async () => {
     mockFetch(weatherRoute);
     seedTrip('w5');

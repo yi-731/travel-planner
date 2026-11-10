@@ -1,6 +1,6 @@
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type { Expense, Item, Trip } from '@/domain/types';
-import { applyImport, interpretSheets, readPastedText, readSpreadsheetFile, replaceRemovals, type ImportResult, type RawSheets } from './importer';
+import { applyImport, interpretSheets, readPastedText, readSpreadsheetFile, replaceRemovals, resolveDayKeys, suggestTripCity, type ImportResult, type RawSheets } from './importer';
 
 // 在台灣時區跑：UTC 時區會藏住「16:00Z 剛好是台北午夜」這類問題
 const ORIGINAL_TZ = process.env.TZ;
@@ -555,7 +555,10 @@ describe('applyImport', () => {
       'append',
     );
     expect(t.items.map((i) => i.title)).toEqual(['舊', '新']);
-    expect(t.items[0]).toEqual(old);
+    // 原本的行程點不動，只補上規則版的導航目的地
+    const { place, ...rest } = t.items[0];
+    expect(rest).toEqual(old);
+    expect(place).toMatchObject({ query: expect.stringMatching(/^舊/), source: 'rule' });
     expect(t.endDate).toBe('2026-11-25');
     expect(t.members).toEqual(['我', '旅伴', '阿姨']);
   });
@@ -678,5 +681,391 @@ describe('applyImport', () => {
     const upd = applyImport(mkTrip({ items: [old] }), sheet, 'replace');
     expect(upd.items[0]).toMatchObject({ id: 'k', time: '10:00', type: 'sight', rating: 5, durationMin: 90 });
     expect(upd.items[0].note).toBeUndefined();
+  });
+});
+
+// ───────────────────────── 真實格式：手排的多城市行程表 ─────────────────────────
+// 合成資料，結構仿照使用者實際的 Google 試算表：標題列第一格是圖例＋第一天的日期列、欄名後面有空白、
+// 日期列只寫在 A 欄、行程列的日期欄空白（偶爾是一句旁註）、★ ◇ 標記、「地點 / 交通」欄混著地址／地點／路線／交通說明。
+const LEGEND = '★ = 必做/已訂 ◇ = 可省略 ⚠ = 時間風險 所有時間為當地時間 日期 12/10（四）｜台北 → 舊金山｜住 Harbor View Inn';
+const HEAD = [LEGEND, '時間 ', '類別 ', '行程內容 ', '地點 / 交通 ', '預估花費 ', '備註 '];
+const banner = (text: string) => [text, '', '', '', '', '', ''];
+const REAL: unknown[][] = [
+  HEAD,
+  ['', '19:30', '機場', '★ 桃園機場報到', 'TPE T1', '', '建議 3 小時前到'],
+  ['', '23:55', '航班', '★ BR018 起飛（777，飛行 11h）', 'TPE → SFO', '已訂', ''],
+  ['', '20:10', '交通', '★ 搭捷運進市區', 'SFO → Powell St', '$11', ''],
+  ['', '21:00', '住宿', '★ Harbor View Inn check-in', '500 Market St', '已訂', '⚠ 押金 $100/晚'],
+  ['', '21:40', '宵夜', '◇ 街角漢堡', '步行 5 分', '$12–18/人', '開到 23:00'],
+  banner('12/11（五）｜舊金山 → 西雅圖｜住 Rainier Suites｜看球賽'),
+  ['', '8:00', '早餐', '飯店早餐', 'Harbor View Inn', '', ''],
+  ['登機門可能更動', '10:30', '航班', '★ AS123 SFO → SEA（2h05m）', 'SFO → SEA', '已訂', '⚠ 提早到'],
+  ['', '14:00', '景點', '★★ 派克市場 Pike Place Market', '85 Pike St', '免費', ''],
+  ['', '19:00', '賽事', '★ 主場棒球賽', '看台', '$45+稅', ''],
+  ['', '23:40', '夜景', '◇ 太空針塔夜景', 'Space Needle', '$35–40', ''],
+  ['', '0:30', '交通', '★ 輕軌回飯店', '回程', '$3 單程', ''],
+  banner('12/12（六）｜雷尼爾山一日遊｜國家公園健行'),
+  ['', '7:00', '出發', '★ 一日團集合', 'Rainier Suites', '$189/人', ''],
+  ['', '12:00', '午餐', '山屋午餐（團費已含）', 'Paradise Inn', '含在團費', ''],
+  ['', '16:00', '回程', '★ 回西雅圖', '驅車 90 mile', '', ''],
+  banner('12/13（日）｜西雅圖 → 舊金山｜住 Bayside Lodge'),
+  ['', '9:00', '租車', '★ 機場取車', '1 Rental Car Dr', '見費用表', ''],
+  ['', '11:00', '停車', '★ 停碼頭停車場', "→ Fisherman's Wharf", '消費驗證免費 2hr', ''],
+  ['', '13:00', '美術館', '★ 現代美術館', '151 3rd St', '$30/人（非居民）', ''],
+  banner('12/14（一）｜舊金山｜金門大橋與回程'),
+  ['', '10:00', '拍照', '★ 金門大橋', 'Golden Gate Bridge', '免費', ''],
+];
+
+describe('interpretSheets：真實格式（手排多城市行程表）', () => {
+  const read = (local = 'JPY') => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 10, 12));
+    return interpretSheets(one(REAL), { name: '', startDate: null, localCurrency: local });
+  };
+  const byTitle = (r: ImportResult, title: string) => r.items.find((i) => i.title.includes(title))!;
+
+  it('標題格是圖例＋第一天的日期列：當作日期欄，標題列下面的行程點就是第一天', () => {
+    const r = read();
+    expect(r.items).toHaveLength(18);
+    expect(r.items.every((i) => i.date)).toBe(true);
+    expect(r.items.slice(0, 5).every((i) => i.date === '2026-12-10')).toBe(true);
+    expect(r.days?.['2026-12-10']).toMatchObject({ label: '台北 → 舊金山｜住 Harbor View Inn', city: '舊金山', lodging: 'Harbor View Inn' });
+    expect(r.warnings).toEqual([]);
+    // 欄名有空白、圖例裡的「項目」「時間」不會搶走欄位
+    expect(r.columns?.items.sort()).toEqual(['address', 'cost', 'date', 'note', 'time', 'title', 'type']);
+  });
+
+  it('日期列 → 每天的城市與住宿（多城市；認不出城市的照樣留原文）', () => {
+    const r = read();
+    expect(Object.keys(r.days ?? {})).toEqual(['2026-12-10', '2026-12-11', '2026-12-12', '2026-12-13', '2026-12-14']);
+    expect(r.days?.['2026-12-11']).toMatchObject({ label: '舊金山 → 西雅圖｜住 Rainier Suites｜看球賽', cities: ['舊金山', '西雅圖'], city: '西雅圖', lodging: 'Rainier Suites' });
+    expect(r.days?.['2026-12-12']?.label).toBe('雷尼爾山一日遊｜國家公園健行');
+    expect(r.days?.['2026-12-13']).toMatchObject({ city: '舊金山', lodging: 'Bayside Lodge' });
+    expect(r.days?.['2026-12-14']).toMatchObject({ city: '舊金山' });
+    // 沒有檔名與標題：用依序過夜的城市當行程名稱
+    expect(r.suggestedName).toBe('舊金山・西雅圖');
+    // 日期列本身不是行程點
+    expect(r.items.some((i) => i.title.includes('｜'))).toBe(false);
+  });
+
+  it('日期欄的旁註：日期沿用上一列，記進備註「提醒：…」', () => {
+    const it = byTitle(read(), 'AS123');
+    expect(it.date).toBe('2026-12-11');
+    expect(it.note?.split('\n')).toEqual(['提醒：登機門可能更動', '補充：2h05m', '⚠ 提早到', '費用：已訂']);
+  });
+
+  it('★ ◇ 標記、類別原文當標籤並對應到類型', () => {
+    const r = read();
+    expect(byTitle(r, '桃園機場')).toMatchObject({ title: '桃園機場報到', flag: 'must', type: 'transport', tag: '機場' });
+    expect(byTitle(r, '派克市場')).toMatchObject({ flag: 'must', type: 'sight' });
+    expect(byTitle(r, '派克市場').tag).toBeUndefined(); // 「景點」就是標準類型名稱
+    expect(byTitle(r, '街角漢堡')).toMatchObject({ title: '街角漢堡', flag: 'optional', type: 'food', tag: '宵夜' });
+    expect(byTitle(r, '飯店早餐').flag).toBeUndefined();
+    const types = Object.fromEntries(r.items.map((i) => [i.tag ?? i.type, i.type]));
+    expect(types).toMatchObject({ 航班: 'transport', 賽事: 'sight', 夜景: 'sight', 出發: 'transport', 回程: 'transport', 租車: 'transport', 停車: 'transport', 美術館: 'sight', 拍照: 'sight', 午餐: 'food', stay: 'stay' });
+    expect(r.items.filter((i) => i.flag === 'must')).toHaveLength(14);
+    expect(r.items.filter((i) => i.flag === 'optional')).toHaveLength(2);
+  });
+
+  it('名稱清理時拿掉的補充（只有時間的括號、開頭的【二選一】）記進備註，資訊不會不見', () => {
+    const r = read();
+    expect(byTitle(r, 'AS123').title).toBe('AS123 SFO → SEA');
+    expect(byTitle(r, 'AS123').note).toContain('補充：2h05m');
+    // 有內容的括號留在名稱裡
+    expect(byTitle(r, 'BR018')).toMatchObject({ title: 'BR018 起飛（777，飛行 11h）', note: '費用：已訂' });
+    const x = run([['行程', '備註'], ['◇【二選一】夜間場（加場）（約 45 分鐘）', '看天氣']]);
+    expect(x.items[0]).toMatchObject({ title: '夜間場（加場）', flag: 'optional', note: '補充：二選一；約 45 分鐘\n看天氣' });
+  });
+
+  it('「地點 / 交通」欄：地址、地點名稱 → 地址；A → B → 路線；交通說明與泛稱 → 交通說明', () => {
+    const r = read();
+    expect(byTitle(r, 'Harbor View Inn check-in').address).toBe('500 Market St');
+    expect(byTitle(r, '飯店早餐').address).toBe('Harbor View Inn');
+    expect(byTitle(r, 'BR018')).toMatchObject({ route: { from: 'TPE', to: 'SFO' } });
+    expect(byTitle(r, 'BR018').address).toBeUndefined();
+    expect(byTitle(r, '停碼頭停車場').route).toEqual({ from: '', to: "Fisherman's Wharf" });
+    expect(byTitle(r, '街角漢堡')).toMatchObject({ transit: '步行 5 分' });
+    expect(byTitle(r, '街角漢堡').address).toBeUndefined();
+    expect(byTitle(r, '回西雅圖')).toMatchObject({ transit: '驅車 90 mile' });
+    expect(byTitle(r, '主場棒球賽')).toMatchObject({ transit: '看台' });
+    expect(byTitle(r, '主場棒球賽').address).toBeUndefined();
+  });
+
+  it('凌晨的時間照寫的留在當天，不重排', () => {
+    const r = read();
+    const i = r.items.findIndex((x) => x.title.includes('輕軌'));
+    expect(r.items[i]).toMatchObject({ date: '2026-12-11', time: '00:30' });
+    expect(r.items[i - 1].time).toBe('23:40');
+  });
+
+  it('預估花費：金額＋寫明的幣別，不只是金額的原文記進備註', () => {
+    const r = read('JPY');
+    const cost = (t: string) => [byTitle(r, t).cost, byTitle(r, t).costCurrency, byTitle(r, t).note?.split('\n').find((l) => l.startsWith('費用：'))];
+    expect(cost('搭捷運')).toEqual([11, 'USD', undefined]);
+    expect(cost('街角漢堡')).toEqual([12, 'USD', '費用：$12–18/人']);
+    expect(cost('Harbor View Inn check-in')).toEqual([undefined, undefined, '費用：已訂']);
+    expect(cost('派克市場')).toEqual([undefined, undefined, '費用：免費']);
+    expect(cost('主場棒球賽')).toEqual([45, 'USD', '費用：$45+稅']);
+    expect(cost('太空針塔')).toEqual([35, 'USD', '費用：$35–40']);
+    expect(cost('輕軌')).toEqual([3, 'USD', '費用：$3 單程']);
+    expect(cost('一日團')).toEqual([189, 'USD', '費用：$189/人']);
+    expect(cost('山屋午餐')).toEqual([undefined, undefined, '費用：含在團費']);
+    expect(cost('機場取車')).toEqual([undefined, undefined, '費用：見費用表']);
+    expect(cost('停碼頭停車場')).toEqual([undefined, undefined, '費用：消費驗證免費 2hr']);
+    expect(cost('現代美術館')).toEqual([30, 'USD', '費用：$30/人（非居民）']);
+    // 當地貨幣本來就是美金：不另外記幣別
+    expect(byTitle(read('USD'), '搭捷運')).toMatchObject({ cost: 11 });
+    expect(byTitle(read('USD'), '搭捷運').costCurrency).toBeUndefined();
+  });
+
+  it('套用成新行程：當地貨幣跟著花費的幣別、城市用最常過夜的城市，每一站都有導航目的地', () => {
+    const r = read();
+    const t = applyImport(mkTrip({ name: '', city: '', localCurrency: 'JPY', rate: 0.21, rateUpdatedAt: 5 }), r, 'new');
+    expect(t.localCurrency).toBe('USD');
+    expect(t.rate).toBe(1);
+    expect(t.rateUpdatedAt).toBeUndefined();
+    expect(t.city).toBe('SAN FRANCISCO');
+    expect(t.startDate).toBe('2026-12-10');
+    expect(t.endDate).toBe('2026-12-14');
+    expect(t.items.find((i) => i.title.includes('搭捷運'))).toMatchObject({ cost: 11 });
+    expect(t.items.every((i) => !('costCurrency' in i))).toBe(true);
+    expect(t.days?.['2026-12-11']).toMatchObject({ city: '西雅圖', lodging: 'Rainier Suites', source: 'rule' });
+    expect(t.items.every((i) => i.place?.query && i.place.source === 'rule')).toBe(true);
+  });
+});
+
+describe('interpretSheets：日期列的其他寫法', () => {
+  it('「第 N 天｜城市」：沒有出發日時用 __D1 記下，套用時依出發日換算', () => {
+    const rows = [['日期', '時間', '行程'], ['第1天｜東京', '', ''], ['', '09:00', '淺草寺'], ['Day 2 - 京都', '10:00', '清水寺']];
+    const r = interpretSheets(one(rows), { ...opts, startDate: null });
+    expect(Object.keys(r.days ?? {})).toEqual(['__D1', '__D2']);
+    expect(r.days?.__D1?.label).toBe('東京');
+    expect(r.days?.__D2?.label).toBe('京都');
+    expect(r.items.map((i) => [i.title, i.dayOffset])).toEqual([['淺草寺', 1], ['清水寺', 2]]);
+    const t = applyImport(mkTrip({ startDate: '2027-04-01' }), r, 'new');
+    expect(Object.keys(t.days ?? {}).filter((k) => !k.startsWith('2027-04-0')).length).toBe(0);
+    expect(t.days?.['2027-04-01']?.label).toBe('東京');
+    expect(t.days?.['2027-04-02']?.label).toBe('京都');
+    const noStart = applyImport(mkTrip(), r, 'new');
+    expect(noStart.days?.__D1?.label).toBe('東京');
+  });
+
+  it('有出發日時直接換算成日期', () => {
+    const r = interpretSheets(one([['日期', '行程'], ['第2天｜大阪', ''], ['', '道頓堀']]), opts);
+    expect(Object.keys(r.days ?? {})).toEqual(['2026-11-22']);
+  });
+
+  it('只有日期（或日期＋星期、時間）的列不算日期列', () => {
+    const r = run([['日期', '時間', '行程'], ['11/21（六）', '', ''], ['', '09:00', '清水寺'], ['2026/11/22 08:00', '', ''], ['', '', '伏見稻荷']]);
+    expect(r.days).toBeUndefined();
+    expect(r.items.map((i) => i.date)).toEqual(['2026-11-21', '2026-11-22']);
+  });
+
+  it('日期格寫著城市、同一列也有行程：照樣記成那天的日期列', () => {
+    const r = run([['日期', '時間', '行程'], ['11/21 京都', '09:00', '清水寺'], ['11/21 京都', '12:00', '錦市場']]);
+    expect(r.days?.['2026-11-21']?.label).toBe('京都');
+    expect(r.items).toHaveLength(2);
+  });
+
+  it('同一天有兩個日期列：以第一個為準', () => {
+    const r = run([['日期', '行程'], ['11/21｜京都', ''], ['', '清水寺'], ['11/21｜大阪', ''], ['', '道頓堀']]);
+    expect(r.days?.['2026-11-21']?.label).toBe('京都');
+  });
+
+  it('標題格開頭就是日期、後面接日期列文字時也認得（沒寫「日期」兩個字）', () => {
+    const r = interpretSheets(one([['11/21（六）｜京都｜住 鴨川旅館', '時間', '行程'], ['', '09:00', '清水寺']]), opts);
+    expect(r.items[0]).toMatchObject({ date: '2026-11-21', title: '清水寺', time: '09:00' });
+    expect(r.days?.['2026-11-21']?.label).toBe('京都｜住 鴨川旅館');
+  });
+
+  it('另外有「日期」欄時，圖例裡的日期不搶日期欄', () => {
+    const r = interpretSheets(one([['說明：日期 11/30 前要訂房', '日期', '行程'], ['', '11/21', '清水寺']]), opts);
+    expect(r.items[0]).toMatchObject({ date: '2026-11-21', title: '清水寺' });
+    expect(r.days).toBeUndefined();
+  });
+
+  it('看起來是日期但不存在、或寫「未定」：沒有日期（不當旁註、不沿用上一列）', () => {
+    const r = run([['日期', '行程'], ['11/21', 'a'], ['未定', 'b'], ['11/31', 'c'], ['TBD', 'd'], ['記得帶護照', 'e']]);
+    expect(r.items.map((i) => [i.title, i.date, i.note])).toEqual([
+      ['a', '2026-11-21', undefined], ['b', null, undefined], ['c', null, undefined], ['d', null, undefined], ['e', '2026-11-21', '提醒：記得帶護照'],
+    ]);
+    // 只寫星期：和空白一樣沿用上一列
+    const w = run([['日期', '行程'], ['11/21', 'a'], ['週六', 'b'], ['(Sat)', 'c']]);
+    expect(w.items.map((i) => [i.date, i.note])).toEqual([['2026-11-21', undefined], ['2026-11-21', undefined], ['2026-11-21', undefined]]);
+  });
+});
+
+describe('interpretSheets：預估花費與幣別', () => {
+  const costs = (cells: unknown[], local = 'JPY') =>
+    run([['行程', '費用'], ...cells.map((c, k) => [`站${k}`, c])], { localCurrency: local }).items.map((i) => [i.cost, i.costCurrency]);
+
+  it('「$」：當地貨幣是其他元（台幣、港幣、新幣…）就是當地貨幣，否則是美金', () => {
+    expect(costs(['$300'], 'TWD')).toEqual([[300, undefined]]);
+    expect(costs(['$300'], 'HKD')).toEqual([[300, undefined]]);
+    expect(costs(['$25'], 'JPY')).toEqual([[25, 'USD']]);
+    expect(costs(['US$25', 'NT$300', 'HK$80', 'S$12', 'A$40', 'C$30', 'NZ$20'], 'JPY')).toEqual([
+      [25, 'USD'], [300, 'TWD'], [80, 'HKD'], [12, 'SGD'], [40, 'AUD'], [30, 'CAD'], [20, 'NZD'],
+    ]);
+  });
+
+  it('¥、€、£、₩ 與中文幣名', () => {
+    expect(costs(['¥1,200', '€15', '£9.5', '₩18,000', '300 日幣', '20 美金'], 'TWD')).toEqual([
+      [1200, 'JPY'], [15, 'EUR'], [9.5, 'GBP'], [18000, 'KRW'], [300, 'JPY'], [20, 'USD'],
+    ]);
+    expect(costs(['¥88'], 'CNY')).toEqual([[88, undefined]]);
+  });
+
+  it('金額取幣別符號後面的數字；時間、人數、距離不是金額', () => {
+    expect(costs(['$5.50/90 分', '2 人 $50', '消費驗證免費 2hr', '90 分鐘', '門票 500'], 'USD')).toEqual([
+      [5.5, undefined], [50, undefined], [undefined, undefined], [undefined, undefined], [500, undefined],
+    ]);
+  });
+
+  it('記帳的金額只寫「$」也認得幣別', () => {
+    const r = interpretSheets(one([['日期', '項目', '金額'], ['11/21', '計程車', '$32']], '記帳'), opts);
+    expect(r.expenses[0]).toMatchObject({ amount: 32, currency: 'USD' });
+    const tw = interpretSheets(one([['日期', '項目', '金額'], ['11/21', '便當', '$120']], '記帳'), { ...opts, localCurrency: 'TWD' });
+    expect(tw.expenses[0]).toMatchObject({ amount: 120, currency: 'TWD' });
+  });
+});
+
+describe('applyImport：地點與每天的城市', () => {
+  const result = (patch: Partial<ImportResult> = {}): ImportResult => ({
+    items: [], expenses: [], warnings: [], hasRelativeDays: false, suggestedName: '匯入的行程', ...patch,
+  });
+
+  it('附加到其他幣別的行程：不同幣別的金額不記成當地貨幣，改寫在備註', () => {
+    const t = applyImport(
+      mkTrip({ localCurrency: 'JPY' }),
+      result({
+        items: [
+          { date: '2026-11-21', title: 'a', type: 'food', done: false, cost: 25, costCurrency: 'USD' },
+          { date: '2026-11-21', title: 'b', type: 'food', done: false, cost: 25, costCurrency: 'USD', note: '費用：$25–35/人' },
+          { date: '2026-11-21', title: 'c', type: 'food', done: false, cost: 800 },
+        ],
+      }),
+      'append',
+    );
+    expect(t.localCurrency).toBe('JPY');
+    expect(t.items.map((i) => [i.cost, i.note])).toEqual([[undefined, '費用：25 USD'], [undefined, '費用：$25–35/人'], [800, undefined]]);
+  });
+
+  it('新行程：有記帳在用目前的當地貨幣時不改當地貨幣', () => {
+    const t = applyImport(
+      mkTrip({ localCurrency: 'JPY' }),
+      result({
+        items: [{ date: '2026-11-21', title: 'a', type: 'food', done: false, cost: 25, costCurrency: 'USD' }],
+        expenses: [{ date: '2026-11-21', title: '拉麵', amount: 1200, currency: 'JPY', category: 'food', payer: '', split: [] }],
+      }),
+      'new',
+    );
+    expect(t.localCurrency).toBe('JPY');
+    expect(t.items[0].cost).toBeUndefined();
+  });
+
+  it('新行程：已填城市就不改；沒有日期列不建 days', () => {
+    const t = applyImport(mkTrip({ city: 'KYOTO' }), result({ days: { '2026-11-21': { label: '大阪', city: '大阪' } } }), 'new');
+    expect(t.city).toBe('KYOTO');
+    expect(Object.keys(applyImport(mkTrip(), result(), 'new').days ?? {})).toEqual([]);
+  });
+
+  it('以試算表為準更新 days：手動的不動、日期列沒變的保留原本結果、城市沒變的保留座標、規則產生的舊日子移除', () => {
+    const geo = { lat: 34.69, lng: 135.5, en: 'Osaka', label: '大阪' };
+    const base = mkTrip({
+      days: {
+        '2026-11-20': { label: '京都', city: '京都', source: 'manual' },
+        '2026-11-21': { label: '京都｜住 A', city: 'Kyoto', geo, source: 'ai' },
+        '2026-11-22': { label: '大阪｜住 B', city: '大阪', geo, source: 'rule' },
+        '2026-11-23': { label: '奈良', city: '奈良', source: 'rule' },
+        '2026-11-24': { city: '神戶', source: 'ai' },
+      },
+    });
+    const t = applyImport(
+      base,
+      result({
+        days: {
+          '2026-11-20': { label: '大阪', city: '大阪' },
+          '2026-11-21': { label: '京都｜住 A', city: '京都' },
+          '2026-11-22': { label: '大阪｜住 C', city: '大阪', lodging: 'C' },
+        },
+      }),
+      'replace',
+    );
+    expect(t.days?.['2026-11-20']).toEqual({ label: '京都', city: '京都', source: 'manual' });
+    expect(t.days?.['2026-11-21']).toEqual({ label: '京都｜住 A', city: 'Kyoto', geo, source: 'ai' });
+    expect(t.days?.['2026-11-22']).toMatchObject({ label: '大阪｜住 C', city: '大阪', lodging: 'C', geo, source: 'rule' });
+    expect(t.days?.['2026-11-24']).toMatchObject({ city: '神戶', source: 'ai' });
+    // 規則產生、這次試算表沒有的日子：移除後由規則版辨識重新補上（不會留著舊的「奈良」）
+    expect(t.days?.['2026-11-23']?.label).toBeUndefined();
+    // 試算表沒有日期列：原本的日子都留著（規則版辨識只補齊欄位）
+    const kept = applyImport(base, result(), 'replace').days ?? {};
+    const brief = (days: NonNullable<Trip['days']>) => Object.fromEntries(Object.entries(days).map(([k, d]) => [k, [d.label, d.source]]));
+    expect(brief(kept)).toEqual(brief(base.days!));
+  });
+
+  it('附加：原本沒有的日子才加，原本有的只補空著的欄位', () => {
+    const base = mkTrip({ days: { '2026-11-21': { city: '京都', source: 'ai' }, '2026-11-22': { label: 'x', source: 'manual' } } });
+    const t = applyImport(
+      base,
+      result({ days: { '2026-11-21': { label: '京都｜住 A', city: '大阪', lodging: 'A' }, '2026-11-22': { label: 'y', city: '奈良' }, '2026-11-23': { label: '神戶', city: '神戶' } } }),
+      'append',
+    );
+    expect(t.days?.['2026-11-21']).toMatchObject({ label: '京都｜住 A', city: '京都', lodging: 'A', source: 'ai' });
+    expect(t.days?.['2026-11-22']).toEqual({ label: 'x', source: 'manual' });
+    expect(t.days?.['2026-11-23']).toMatchObject({ label: '神戶', source: 'rule' });
+  });
+
+  it('以試算表為準更新行程點：保留手動與 AI 的導航目的地（地點沒改時）；舊版匯入帶 ★ 的名稱也對得上', () => {
+    const ai = { query: 'Fushimi Inari Taisha, Kyoto, Japan', source: 'ai' as const };
+    const manual = { query: '我自己選的', source: 'manual' as const };
+    const base = mkTrip({
+      items: [
+        mkItem({ id: 'a', title: '伏見稻荷', date: '2026-11-21', address: '伏見', place: ai, done: true }),
+        mkItem({ id: 'b', title: '錦市場', date: '2026-11-21', address: '中京區', place: ai }),
+        mkItem({ id: 'c', title: '晚餐', date: '2026-11-21', place: manual }),
+        mkItem({ id: 'd', title: '★ 金閣寺', date: '2026-11-22', done: true }),
+      ],
+    });
+    const t = applyImport(
+      base,
+      result({
+        items: [
+          { date: '2026-11-21', title: '伏見稻荷', type: 'sight', done: false, address: '伏見' },
+          { date: '2026-11-21', title: '錦市場', type: 'food', done: false, address: '錦小路通' },
+          { date: '2026-11-21', title: '晚餐', type: 'food', done: false, address: '祇園' },
+          { date: '2026-11-22', title: '金閣寺', type: 'sight', done: false, flag: 'must' },
+        ],
+        columns: { items: ['date', 'title', 'type', 'address'], expenses: [] },
+      }),
+      'replace',
+    );
+    const get = (id: string) => t.items.find((i) => i.id === id);
+    expect(get('a')?.place).toEqual(ai);
+    expect(get('b')?.place?.source).not.toBe('ai'); // 地址改了：重新辨識
+    expect(get('c')?.place).toEqual(manual);
+    expect(get('d')).toMatchObject({ title: '金閣寺', flag: 'must', done: true });
+    expect(t.items).toHaveLength(4);
+  });
+
+  it('沒有地點欄時，以試算表為準更新也保留 App 裡的路線、交通說明與標籤', () => {
+    const old = mkItem({ id: 'k', title: '搭車', date: '2026-11-21', route: { from: 'A', to: 'B' }, transit: '步行 5 分', tag: '接駁' });
+    const t = applyImport(mkTrip({ items: [old] }), run([['日期', '行程'], ['11/21', '搭車']]), 'replace');
+    expect(t.items[0]).toMatchObject({ id: 'k', route: { from: 'A', to: 'B' }, transit: '步行 5 分', tag: '接駁' });
+  });
+});
+
+describe('resolveDayKeys / suggestTripCity', () => {
+  it('「第 N 天」的 key 依出發日換成日期，原本就是日期的優先', () => {
+    expect(resolveDayKeys({ __D1: 'a', __D3: 'c', '2026-11-23': 'x' }, '2026-11-21')).toEqual({ '2026-11-21': 'a', '2026-11-23': 'x' });
+    expect(resolveDayKeys({ __D1: 'a' }, null)).toEqual({ __D1: 'a' });
+  });
+
+  it('最常過夜的城市（沒寫的沿用前一天），認得的用英文大寫', () => {
+    expect(suggestTripCity({ '2027-03-08': { city: '西雅圖' }, '2027-03-09': { city: '波特蘭' }, '2027-03-10': {}, '2027-03-11': {}, '2027-03-12': { city: '西雅圖' } })).toBe('PORTLAND');
+    // 同樣多天：先出現的
+    expect(suggestTripCity({ '2027-03-08': { city: '京都' }, '2027-03-09': { city: '大阪' } })).toBe('KYOTO');
+    expect(suggestTripCity({ '2027-03-08': { city: '火星基地' } })).toBe('火星基地');
+    expect(suggestTripCity({})).toBe('');
+    expect(suggestTripCity(undefined)).toBe('');
   });
 });

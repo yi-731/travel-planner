@@ -7,12 +7,18 @@ import {
   cityNameVariants,
   climateYearsBack,
   fetchTripWeather,
+  dayWeatherLocation,
+  findCitiesInText,
   findCityAlias,
   geocodeCity,
+  geocodeTravelCity,
   modeWeatherCode,
   parseForecast,
   shiftYears,
+  validWeatherDays,
   weatherInfo,
+  weatherLocations,
+  weatherLocKey,
   weatherStale,
   type ArchiveDaily,
 } from './weather';
@@ -266,7 +272,7 @@ describe('fetchTripWeather', () => {
     ]);
     expect(c.days[0]).toMatchObject({ code: 3, tMax: 14, tMin: 5, rainProb: 20, sunrise: '06:35' });
     // 2025:61 / 2024:1 / 2023:1 → 1；氣溫 12、13、14 → 13；雨量 6、0、0 → 2
-    expect(c.days[4]).toEqual({ date: '2026-11-25', code: 1, tMax: 13, tMin: 4, rainMm: 2, kind: 'climate' });
+    expect(c.days[4]).toEqual({ date: '2026-11-25', code: 1, tMax: 13, tMin: 4, rainMm: 2, kind: 'climate', place: '京都' });
 
     const fc = calls.find((u) => u.host === 'api.open-meteo.com')!;
     expect(fc.searchParams.get('start_date')).toBe('2026-11-21');
@@ -295,7 +301,7 @@ describe('fetchTripWeather', () => {
     const prev: WeatherCache = { fetchedAt: Date.now() - 5 * HOUR, lat: KYOTO.lat, lng: KYOTO.lng, days: [day('2026-11-25', 'climate')] };
     const c = await fetchTripWeather(trip({ weather: prev }));
     expect(c.days).toHaveLength(5);
-    expect(c.days[4]).toEqual(day('2026-11-25', 'climate'));
+    expect(c.days[4]).toEqual({ ...day('2026-11-25', 'climate'), place: '京都' });
     expect(calls.some((u) => u.host === 'archive-api.open-meteo.com')).toBe(false);
   });
 
@@ -402,5 +408,153 @@ describe('城市定位', () => {
   it('連線失敗丟出中文錯誤（不要誤報成找不到）', async () => {
     mockFetch(() => undefined);
     await expect(geocodeCity('京都')).rejects.toThrow('無法連線到城市定位服務');
+  });
+});
+
+/* ---------------- 多城市行程 ---------------- */
+
+const LV = { lat: 36.175, lng: -115.1372, en: 'Las Vegas', admin1: 'Nevada', countryCode: 'US', label: '拉斯維加斯，美國' };
+const LA = { lat: 34.0522, lng: -118.2437, label: '洛杉磯，美國', countryCode: 'US' };
+
+/** 洛杉磯出發 → 拉斯維加斯兩晚 → 回洛杉磯（日期在預報範圍內） */
+function multiTrip(over: Partial<Trip> = {}): Trip {
+  const d = (n: number) => addDays(TODAY, n);
+  return trip({
+    city: '洛杉磯',
+    cityGeo: LA,
+    startDate: d(2),
+    endDate: d(5),
+    days: {
+      [d(2)]: { city: '洛杉磯', label: '台北 → 洛杉磯' },
+      [d(3)]: { city: '拉斯維加斯', geo: LV, lodging: 'Maple Lodge' },
+      // 沒寫城市：沿用前一天
+      [d(4)]: { label: '大峽谷一日遊' },
+      [d(5)]: { city: '洛杉磯' },
+    },
+    ...over,
+  });
+}
+
+describe('每天的天氣地點', () => {
+  it('依當天城市；沒寫城市沿用前一天；同城市沒有座標時用行程城市的座標', () => {
+    const t = multiTrip();
+    expect(dayWeatherLocation(t, addDays(TODAY, 2))).toEqual({ lat: 34.0522, lng: -118.2437, place: '洛杉磯' });
+    expect(dayWeatherLocation(t, addDays(TODAY, 3))).toEqual({ lat: 36.175, lng: -115.1372, place: '拉斯維加斯' });
+    expect(dayWeatherLocation(t, addDays(TODAY, 4))).toEqual({ lat: 36.175, lng: -115.1372, place: '拉斯維加斯' });
+    expect(weatherLocKey(weatherLocations(t))).toBe(
+      `${addDays(TODAY, 2)}:34.05,-118.24|${addDays(TODAY, 3)}:36.17,-115.14|${addDays(TODAY, 4)}:36.17,-115.14|${addDays(TODAY, 5)}:34.05,-118.24`,
+    );
+  });
+  it('單一城市行程（沒有 days）：全部用行程城市，地點名稱是別名表的中文名', () => {
+    expect(dayWeatherLocation(trip(), addDays(TODAY, 12))).toEqual({ lat: KYOTO.lat, lng: KYOTO.lng, place: '京都' });
+  });
+});
+
+describe('fetchTripWeather（多城市）', () => {
+  it('一次請求帶多個座標，每天用自己城市的天氣，並記下 place 與 locKey', async () => {
+    const calls = mockFetch((u) => {
+      if (u.host !== 'api.open-meteo.com') return undefined;
+      const lats = u.searchParams.get('latitude')!.split(',');
+      // 多個座標時回傳陣列；拉斯維加斯比較冷
+      return { body: lats.map((lat) => {
+        const b = forecastBody(u);
+        if (lat.startsWith('36')) b.daily.temperature_2m_max = b.daily.temperature_2m_max.map(() => 8);
+        return b;
+      }) };
+    });
+    const t = multiTrip();
+    const c = await fetchTripWeather(t);
+    const fc = calls.filter((u) => u.host === 'api.open-meteo.com');
+    expect(fc).toHaveLength(1);
+    expect(fc[0].searchParams.get('latitude')).toBe('34.0522,36.175');
+    expect(fc[0].searchParams.get('longitude')).toBe('-118.2437,-115.1372');
+    expect(c.days.map((d) => [d.place, d.tMax])).toEqual([['洛杉磯', 14], ['拉斯維加斯', 8], ['拉斯維加斯', 8], ['洛杉磯', 14]]);
+    expect(c.locKey).toBe(weatherLocKey(weatherLocations(t)));
+    expect(c.lat).toBe(LA.lat);
+    expect(weatherStale(c, t)).toBe(false);
+  });
+
+  it('某天換了城市：locKey 不同 → 過期；只有那天的舊天氣不顯示', async () => {
+    mockFetch((u) => (u.host === 'api.open-meteo.com' ? { body: u.searchParams.get('latitude')!.includes(',') ? [forecastBody(u), forecastBody(u)] : forecastBody(u) } : undefined));
+    const t = multiTrip();
+    const c = await fetchTripWeather(t);
+    const moved = multiTrip();
+    moved.days![addDays(TODAY, 5)] = { city: '拉斯維加斯', geo: LV };
+    expect(weatherStale(c, moved)).toBe(true);
+    expect(validWeatherDays(c, moved).map((d) => d.date)).toEqual([2, 3, 4].map((n) => addDays(TODAY, n)));
+    expect(validWeatherDays(c, t)).toHaveLength(4);
+  });
+
+  it('舊版快取（沒有 locKey）：單一城市行程照常有效', () => {
+    const legacy: WeatherCache = { fetchedAt: Date.now(), lat: KYOTO.lat, lng: KYOTO.lng, days: [12, 13, 14, 15, 16].map((n) => day(addDays(TODAY, n), n <= 15 ? 'forecast' : 'climate')) };
+    expect(weatherStale(legacy, trip())).toBe(false);
+    expect(validWeatherDays(legacy, trip())).toHaveLength(5);
+    // 多城市行程用舊快取：城市不同的日子視為過期
+    const lvDay = trip({ days: { [addDays(TODAY, 14)]: { city: '拉斯維加斯', geo: LV } } });
+    expect(weatherStale(legacy, lvDay)).toBe(true);
+  });
+
+  it('沒有行程城市、但有日期城市：用第一個有座標的日子當主要座標', async () => {
+    mockFetch((u) => (u.host === 'api.open-meteo.com' ? { body: forecastBody(u) } : undefined));
+    const t = trip({ city: '', cityGeo: undefined, startDate: addDays(TODAY, 3), endDate: addDays(TODAY, 4), days: { [addDays(TODAY, 3)]: { city: '拉斯維加斯', geo: LV } } });
+    const c = await fetchTripWeather(t);
+    expect(c.lat).toBe(LV.lat);
+    expect(c.days.every((d) => d.place === '拉斯維加斯')).toBe(true);
+  });
+});
+
+describe('城市別名與文字中的城市', () => {
+  it('別名表：英文簡稱、州', () => {
+    expect(findCityAlias('LA')?.display).toBe('洛杉磯');
+    expect(findCityAlias('vegas')?.display).toBe('拉斯維加斯');
+    expect(findCityAlias('NYC')?.en).toBe('New York');
+    expect(findCityAlias('佩吉')).toEqual({ display: '佩吉', en: 'Page', cc: 'US', admin1: 'Arizona' });
+    expect(findCityAlias('Santa Monica')?.display).toBe('聖塔莫尼卡');
+    // 舊格式（沒有州）照常
+    expect(findCityAlias('京都')).toEqual({ display: '京都', en: 'Kyoto', cc: 'JP', admin1: undefined });
+  });
+  it('findCitiesInText：飯店名稱裡的城市、較長的寫法優先', () => {
+    const names = (s: string) => findCitiesInText(s).map((m) => m.alias.display);
+    expect(names('住 Hyatt Santa Monica')).toEqual(['聖塔莫尼卡']);
+    expect(names('New York-New York Las Vegas')).toEqual(['紐約', '紐約', '拉斯維加斯']);
+    expect(names('Venice Beach 散步')).toEqual(['威尼斯']);
+    expect(names('東京都庁')).toEqual(['東京']);
+    expect(names('Page｜當地時間')).toEqual(['佩吉']);
+    expect(names('West Hollywood 早午餐')).toEqual(['西好萊塢']);
+  });
+  it('findCitiesInText：路名、菜名、短英文的大小寫不算', () => {
+    const names = (s: string) => findCitiesInText(s).map((m) => m.alias.display);
+    expect(names('1234 Santa Monica Blvd')).toEqual([]);
+    expect(names('北京烤鴨')).toEqual([]);
+    expect(names('晚餐 大阪燒')).toEqual([]);
+    expect(names('LAOX 免稅店')).toEqual([]);
+    expect(names('500 S La Brea Ave')).toEqual([]);
+    expect(names('see page 3')).toEqual([]);
+    expect(names('日光浴')).toEqual([]);
+  });
+});
+
+describe('geocodeTravelCity', () => {
+  it('同名城市選別名表指定的州（Hollywood, FL 人口較多也選 CA），回傳英文名與州', async () => {
+    const calls = mockFetch((u) =>
+      u.searchParams.get('name') === 'Hollywood'
+        ? {
+            body: {
+              results: [
+                { name: 'Hollywood', admin1: 'Florida', latitude: 26.01, longitude: -80.15, feature_code: 'PPL', population: 149728, country_code: 'US' },
+                { name: 'Hollywood', admin1: 'California', latitude: 34.0983, longitude: -118.3267, feature_code: 'PPLX', population: 167664, country_code: 'US', timezone: 'America/Los_Angeles' },
+              ],
+            },
+          }
+        : { body: {} },
+    );
+    const g = await geocodeTravelCity('好萊塢');
+    expect(g).toEqual({ lat: 34.0983, lng: -118.3267, label: '好萊塢，美國', en: 'Hollywood', admin1: 'California', timezone: 'America/Los_Angeles', countryCode: 'US' });
+    expect(calls[0].searchParams.get('language')).toBe('en');
+    expect(calls[0].searchParams.get('countryCode')).toBe('US');
+  });
+  it('不在別名表的城市：照原文查，英文結果名當 en', async () => {
+    mockFetch(() => ({ body: { results: [{ name: 'Kanab', admin1: 'Utah', latitude: 37.05, longitude: -112.53, feature_code: 'PPLA2', population: 4500, country_code: 'US' }] } }));
+    expect(await geocodeTravelCity('Kanab')).toMatchObject({ en: 'Kanab', admin1: 'Utah', label: 'Kanab，美國' });
   });
 });

@@ -5,7 +5,10 @@ import type { Expense, Item, Trip } from '@/domain/types';
 import {
   cityFitLength,
   displayCity,
+  eyebrowPlace,
   eyebrowText,
+  heroCity,
+  isMultiCity,
   fmtDistance,
   hasCJK,
   isPastStop,
@@ -20,6 +23,7 @@ import {
   travelTileKind,
   valueSizeClass,
   weatherSub,
+  weatherTileSub,
 } from './model';
 
 const item = (id: string, time?: string, extra: Partial<Item> = {}): Item => ({
@@ -189,5 +193,47 @@ describe('天氣與數字', () => {
     expect(valueSizeClass('21,234')).toBe('md');
     expect(valueSizeClass('123,456')).toBe('sm');
     expect(valueSizeClass('12,345,678')).toBe('xs');
+  });
+});
+
+describe('多城市：當天城市', () => {
+  it('旅途中的標題列加上當天城市或路線', () => {
+    const p = tripPhase(trip(), '2026-11-22');
+    expect(eyebrowText(p, '大阪')).toBe('DAY 3 / 5 · 11/22（週日）· 大阪');
+    expect(eyebrowText(p, ' ')).toBe('DAY 3 / 5 · 11/22（週日）');
+    // 出發前不加（那天還沒到那裡）
+    expect(eyebrowText(tripPhase(trip(), '2026-11-08'), '大阪')).toBe('11/20（週五）出發');
+  });
+  it('移動日寫路線，和大字一樣的城市不重複', () => {
+    expect(eyebrowPlace(['洛杉磯', '拉斯維加斯'], '拉斯維加斯', '拉斯維加斯')).toBe('洛杉磯 → 拉斯維加斯');
+    expect(eyebrowPlace([], '拉斯維加斯', '拉斯維加斯')).toBe('');
+    expect(eyebrowPlace(['拉斯維加斯'], '拉斯維加斯', 'LAS VEGAS')).toBe('拉斯維加斯');
+    expect(eyebrowPlace(undefined, undefined, 'KYOTO')).toBe('');
+  });
+  it('大字：旅途中當天在別的城市就顯示那個城市', () => {
+    const t = { city: '拉斯維加斯', name: '美西' };
+    expect(heroCity(t, '洛杉磯', 'during')).toBe('洛杉磯');
+    expect(heroCity(t, '洛杉磯', 'before')).toBe('拉斯維加斯');
+    expect(heroCity(t, 'Las Vegas', 'during')).toBe('拉斯維加斯');
+    expect(heroCity(t, undefined, 'during')).toBe('拉斯維加斯');
+    // 行程城市是英文時，當天城市也換成英文
+    expect(heroCity({ city: 'LAS VEGAS', name: 'x' }, '洛杉磯', 'during')).toBe('Los Angeles');
+    expect(heroCity({ city: 'LAS VEGAS', name: 'x' }, '某個小鎮', 'during')).toBe('某個小鎮');
+    // 沒有行程城市：用當天城市
+    expect(heroCity({ city: '', name: '美西' }, '洛杉磯', 'during')).toBe('洛杉磯');
+  });
+  it('判斷多城市行程（同一城市不同寫法不算）', () => {
+    expect(isMultiCity({})).toBe(false);
+    expect(isMultiCity({ days: { a: { city: '拉斯維加斯' }, b: { city: 'Las Vegas' } } })).toBe(false);
+    expect(isMultiCity({ days: { a: { city: '洛杉磯' }, b: { label: 'x' }, c: { city: '拉斯維加斯' } } })).toBe(true);
+  });
+  it('天氣小卡副標寫出城市，放不下時保留重點', () => {
+    expect(weatherTileSub('拉斯維加斯', '晴', 'forecast')).toBe('拉斯維加斯 · 晴');
+    expect(weatherTileSub('拉斯維加斯', '多雲時陰', 'forecast')).toBe('拉斯維加斯');
+    expect(weatherTileSub('京都', '多雲', 'climate')).toBe('京都 · 歷年平均');
+    expect(weatherTileSub('舊金山', '多雲', 'climate')).toBe('舊金山 · 平均');
+    expect(weatherTileSub('拉斯維加斯', '多雲', 'climate')).toBe('歷年平均');
+    expect(weatherTileSub('LA', '晴', 'climate')).toBe('LA · 歷年平均');
+    expect(weatherTileSub(undefined, '晴', 'forecast')).toBe('晴 · 預報');
   });
 });

@@ -5,9 +5,10 @@ import type { SegmentInfo } from '@/domain/schedule';
 import type { Trip } from '@/domain/types';
 import { useTripWeather } from '@/services/hooks';
 import { gmapsTraffic } from '@/services/links';
+import { dayMetaFor } from '@/services/places';
 import { useUI } from '@/store/ui';
 import { Icon, Tile } from '@/ui';
-import { fmtDistance, safeWeatherInfo, spendSummary, travelTileKind, valueSizeClass, weatherSub } from './model';
+import { fmtDistance, isMultiCity, safeWeatherInfo, spendSummary, travelTileKind, valueSizeClass, weatherTileSub } from './model';
 import s from './home.module.css';
 
 const SIZE = { md: '', sm: s.valSm, xs: s.valXs } as const;
@@ -28,6 +29,15 @@ function WeatherTile({ trip, phase }: { trip: Trip; phase: TripPhase }) {
   const weather = useTripWeather(trip);
   const day = phase.focusDay ? weather.forDate(phase.focusDay) : undefined;
   const info = day ? safeWeatherInfo(day.code) : null;
+  // 多城市行程：寫出這天的天氣是哪個城市的
+  let city: string | undefined;
+  if (isMultiCity(trip) && phase.focusDay) {
+    try {
+      city = day?.place?.trim() || dayMetaFor(trip, phase.focusDay)?.city?.trim() || undefined;
+    } catch {
+      city = day?.place?.trim() || undefined;
+    }
+  }
 
   let value: ReactNode = <span className={s.valDim}>—</span>;
   let sub: string;
@@ -38,7 +48,7 @@ function WeatherTile({ trip, phase }: { trip: Trip; phase: TripPhase }) {
         {Math.round(day.tMax)}°
       </span>
     );
-    sub = weatherSub(info.label, day.kind);
+    sub = weatherTileSub(city, info.label, day.kind);
   } else if (weather.loading) sub = '讀取中';
   else if (weather.error) sub = '點我重試';
   else if (!phase.focusDay) sub = '設定日期後顯示';

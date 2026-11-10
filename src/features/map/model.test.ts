@@ -14,6 +14,7 @@ import {
   resolveDate,
   SINGLE_ZOOM,
   stopAddress,
+  stopPlace,
   stopSubtitle,
   straightKm,
   tileUrl,
@@ -150,5 +151,23 @@ describe('tiles and links', () => {
   it('has four quick links to Google Maps', () => {
     expect(QUICK_LINKS.map((q) => q.label)).toEqual(['即時路況', '附近美食', '便利商店', '車站']);
     for (const q of QUICK_LINKS) expect(q.href).toMatch(/^https:\/\/www\.google\.com\/maps\//);
+  });
+});
+
+describe('stopPlace', () => {
+  it('shows the navigation destination with its city context', () => {
+    expect(stopPlace(item({ title: 'Pike Place Market', place: { query: 'Pike Place Market, Seattle, WA, USA', source: 'rule' } }))).toEqual({
+      text: 'Pike Place Market, Seattle, WA, USA',
+      navigable: true,
+    });
+  });
+  it('falls back to the address when the destination is just the title', () => {
+    expect(stopPlace(item({ title: '錦市場', address: '京都市中京区', place: { query: '錦市場', source: 'rule' } })).text).toBe('京都市中京区');
+    expect(stopPlace(item({ title: '錦市場' })).text).toBe('');
+  });
+  it('marks stops without a place', () => {
+    expect(stopPlace(item({ title: '起床', place: { query: '起床', source: 'rule', navigable: false } }))).toEqual({ text: '沒有特定地點', navigable: false });
+    // 有座標（地圖連結）的一律可以導航
+    expect(stopPlace(item({ title: '起床', place: { query: '起床', source: 'rule', navigable: false }, geo: { lat: 1, lng: 2, source: 'link' } })).navigable).toBe(true);
   });
 });

@@ -1,10 +1,11 @@
 /**
  * 天氣頁：整趟旅程每天的天氣（像 iOS 天氣的 10 日預報）。
  * 上方焦點卡（今天或第一天，點下方任一天可切換）→ 每日列表＋溫度條 → AI 穿搭建議 → 其他天氣來源 → 資料來源。
+ * 多城市行程：每天的天氣是那天所在城市的（DailyWeather.place），列表依連續的城市分段、每段有城市小標題。
  * 天氣資料由 services/hooks 的 useTripWeather 提供（會自動快取、過期重抓）。
  */
 import { motion, useReducedMotion } from 'motion/react';
-import { useState, type CSSProperties } from 'react';
+import { Fragment, useState, type CSSProperties } from 'react';
 import { fmtMD, today, tripPhase, weekday } from '@/domain/dates';
 import type { DailyWeather, ISODate, Trip } from '@/domain/types';
 import AiKeyNotice from '@/features/ai/AiKeyNotice';
@@ -12,11 +13,11 @@ import { haptic } from '@/platform';
 import { aiErrorMessage, packingAdvice } from '@/services/ai';
 import { useTripWeather, type TripWeather } from '@/services/hooks';
 import { weatherLinks } from '@/services/links';
-import { weatherInfo } from '@/services/weather';
+import { dayWeatherLocation, weatherInfo } from '@/services/weather';
 import { useActiveTrip, useData } from '@/store';
 import { useUI } from '@/store/ui';
 import { Button, Empty, Icon, ListGroup, ListRow, Note, Orb, Sheet, Spinner, type IconName } from '@/ui';
-import { barInset, fmtDayLabel, fmtUpdated, rainLong, rainText, tempScale, type TempScale } from './model';
+import { barInset, citiesText, distinctCities, fmtDayLabel, fmtUpdated, groupByCity, rainLong, rainText, tempScale, type TempScale } from './model';
 import s from './weather.module.css';
 
 function attempt<T>(fn: () => T, fallback: T): T {
@@ -85,6 +86,11 @@ function WeatherBody({ trip, weather }: { trip: Trip; weather: TripWeather }) {
   }
   const known = [...byDate.values()];
   const scale = tempScale(known);
+
+  // 多城市行程：依連續的城市分段（沒有天氣資料的日子用那天的城市）
+  const cityOf = (d: ISODate) => byDate.get(d)?.place ?? attempt(() => dayWeatherLocation(trip, d)?.place, undefined);
+  const groups = groupByCity(days, cityOf);
+  const multi = distinctCities(groups.map((g) => g.city)).length >= 2;
   const hasClimate = known.some((d) => d.kind === 'climate');
 
   const defaultFocus = phase?.phase === 'during' ? phase.focusDay : (days[0] ?? null);
@@ -93,6 +99,7 @@ function WeatherBody({ trip, weather }: { trip: Trip; weather: TripWeather }) {
   const fallback = defaultFocus && byDate.has(defaultFocus) ? defaultFocus : (known[0]?.date ?? defaultFocus);
   const focus = picked && days.includes(picked) ? picked : fallback;
   const focusWx = focus ? byDate.get(focus) : undefined;
+  const focusCity = multi && focus ? cityOf(focus) : undefined;
 
   const showSkeleton = weather.loading && !known.length && hasCity && days.length > 0;
 
@@ -110,7 +117,7 @@ function WeatherBody({ trip, weather }: { trip: Trip; weather: TripWeather }) {
         };
 
   return (
-    <Sheet eyebrow={cityName ? `天氣 · ${cityName}` : undefined} title={title}>
+    <Sheet eyebrow={multi ? `天氣 · ${citiesText(groups.map((g) => g.city))}` : cityName ? `天氣 · ${cityName}` : undefined} title={title}>
       {!hasCity && (
         <Note tone="info">
           <strong>{days.length ? '還沒設定城市' : '還沒設定城市和日期'}</strong>
@@ -162,7 +169,7 @@ function WeatherBody({ trip, weather }: { trip: Trip; weather: TripWeather }) {
       {/* 圓角卡片包一層：彈出頁內容超過一頁時，overflow: hidden 的卡片才不會被壓扁 */}
       {focus && focusWx && (
         <div>
-          <FocusCard date={focus} wx={focusWx} dayNo={days.indexOf(focus) + 1} isToday={focus === now} />
+          <FocusCard date={focus} wx={focusWx} dayNo={days.indexOf(focus) + 1} isToday={focus === now} city={focusCity ?? undefined} />
         </div>
       )}
 
@@ -175,21 +182,41 @@ function WeatherBody({ trip, weather }: { trip: Trip; weather: TripWeather }) {
       {known.length > 0 && scale && (
         <div className={s.daysWrap}>
           <ol className={s.days} aria-label="每日天氣">
-            {days.map((d, i) => (
-              <motion.li key={d} {...enter(i)}>
-                <DayRow
-                  date={d}
-                  dayNo={i + 1}
-                  wx={byDate.get(d)}
-                  scale={scale}
-                  isToday={d === now}
-                  selected={d === focus}
-                  onPick={() => {
-                    void haptic('selection');
-                    setPicked(d);
-                  }}
-                />
-              </motion.li>
+            {groups.map((g, gi) => (
+              <Fragment key={g.dates[0]}>
+                {multi && (
+                  <li className={s.cityHead}>
+                    <span className={s.cityName}>
+                      <Icon name="pin" size={13} stroke={2.3} />
+                      {g.city || '城市未定'}
+                    </span>
+                    <span className={`num ${s.cityDates}`}>
+                      {fmtMD(g.dates[0])}
+                      {g.dates.length > 1 ? `–${fmtMD(g.dates[g.dates.length - 1])}` : ''}
+                    </span>
+                  </li>
+                )}
+                {g.dates.map((d) => {
+                  const i = days.indexOf(d);
+                  return (
+                    <motion.li key={d} {...enter(i + gi)}>
+                      <DayRow
+                        date={d}
+                        dayNo={i + 1}
+                        wx={byDate.get(d)}
+                        scale={scale}
+                        isToday={d === now}
+                        selected={d === focus}
+                        city={multi ? g.city : undefined}
+                        onPick={() => {
+                          void haptic('selection');
+                          setPicked(d);
+                        }}
+                      />
+                    </motion.li>
+                  );
+                })}
+              </Fragment>
             ))}
           </ol>
           {hasClimate && <p className={s.footnote}>超過 16 天的日期顯示近 3 年同期平均，出發前兩週會自動換成即時預報。</p>}
@@ -199,8 +226,8 @@ function WeatherBody({ trip, weather }: { trip: Trip; weather: TripWeather }) {
       {hasCity && days.length > 0 && <PackingSection trip={trip} weather={weather} hasWeather={known.length > 0} />}
 
       {hasCity && (
-        <ListGroup title="其他天氣來源">
-          {attempt(() => weatherLinks(trip.cityGeo?.label || cityName), []).map((l) => (
+        <ListGroup title={multi && focusCity ? `其他天氣來源 · ${focusCity}` : '其他天氣來源'}>
+          {attempt(() => weatherLinks((multi && focusCity) || trip.cityGeo?.label || cityName), []).map((l) => (
             <ListRow key={l.label} icon="globe" title={l.label} href={l.url} />
           ))}
         </ListGroup>
@@ -237,7 +264,7 @@ function WeatherBody({ trip, weather }: { trip: Trip; weather: TripWeather }) {
 
 /* ---------- 焦點卡 ---------- */
 
-function FocusCard({ date, wx, dayNo, isToday }: { date: ISODate; wx: DailyWeather; dayNo: number; isToday: boolean }) {
+function FocusCard({ date, wx, dayNo, isToday, city }: { date: ISODate; wx: DailyWeather; dayNo: number; isToday: boolean; city?: string }) {
   const reduce = useReducedMotion();
   const w = info(wx.code);
   const rain = rainLong(wx);
@@ -246,7 +273,7 @@ function FocusCard({ date, wx, dayNo, isToday }: { date: ISODate; wx: DailyWeath
   );
 
   return (
-    <section className={s.focus} aria-label={`${isToday ? '今天' : `Day ${dayNo}`}的天氣`}>
+    <section className={s.focus} aria-label={`${isToday ? '今天' : `Day ${dayNo}`}${city ? `${city}` : ''}的天氣`}>
       <Orb size={250} halo style={{ right: -78, top: -64 }} />
       <Orb size={168} style={{ right: -38, top: -22 }} />
       <motion.div
@@ -259,6 +286,7 @@ function FocusCard({ date, wx, dayNo, isToday }: { date: ISODate; wx: DailyWeath
         <div className={s.focusTop}>
           <span className={`eyebrow ${s.focusEyebrow}`}>
             {isToday ? '今天' : `Day ${dayNo}`} · <span className="num">{dayLabel(date)}</span>
+            {city ? `· ${city}` : ''}
           </span>
         </div>
         <div className={s.focusMain}>
@@ -302,10 +330,12 @@ interface DayRowProps {
   scale: TempScale;
   isToday: boolean;
   selected: boolean;
+  /** 多城市行程：這天的城市（只用在讀屏，畫面上由分段標題顯示） */
+  city?: string;
   onPick: () => void;
 }
 
-function DayRow({ date, dayNo, wx, scale, isToday, selected, onPick }: DayRowProps) {
+function DayRow({ date, dayNo, wx, scale, isToday, selected, city, onPick }: DayRowProps) {
   const head = (
     <span className={s.dayHead}>
       <span className={s.dayName}>
@@ -338,7 +368,7 @@ function DayRow({ date, dayNo, wx, scale, isToday, selected, onPick }: DayRowPro
       type="button"
       className={`${s.row} ${isToday ? s.isToday : ''} ${selected ? s.selected : ''}`}
       aria-pressed={selected}
-      aria-label={`Day ${dayNo}，${dayLabel(date)}，${w.label}，${lo} 到 ${hi} 度${rain ? `，降雨 ${rain}` : ''}，${KIND_LABEL[wx.kind]}`}
+      aria-label={`Day ${dayNo}，${dayLabel(date)}${city ? `，${city}` : ''}，${w.label}，${lo} 到 ${hi} 度${rain ? `，降雨 ${rain}` : ''}，${KIND_LABEL[wx.kind]}`}
       onClick={onPick}
     >
       {head}

@@ -12,6 +12,8 @@ export type SheetRoute =
   | { name: 'place'; itemId: string }
   | { name: 'itemForm'; itemId?: string; date?: ISODate }
   | { name: 'segment'; fromId: string; toId: string }
+  /** 某一天的城市、住宿、天氣（行程分頁日期列下方那一行） */
+  | { name: 'dayInfo'; date: ISODate }
   | { name: 'weather' }
   | { name: 'recommend'; date?: ISODate }
   | { name: 'tripPicker' }

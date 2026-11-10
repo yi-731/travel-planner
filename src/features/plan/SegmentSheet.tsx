@@ -8,10 +8,10 @@ import { fmtMD, fromMinutes, toMinutes } from '@/domain/dates';
 import { daySegments, haversineKm, segmentEstimate, type SegmentInfo } from '@/domain/schedule';
 import type { Item, Trip } from '@/domain/types';
 import { useDayCheck } from '@/features/ai/useDayCheck';
-import { appleMapsNavigate, gmapsDirections, gmapsTraffic, type TravelMode } from '@/services/links';
+import { appleMapsNavigate, gmapsDirections, gmapsNavigate, gmapsTraffic, type TravelMode } from '@/services/links';
 import { useActiveTrip } from '@/store/data';
 import { Empty, Icon, ListGroup, ListRow, Note, Orb, Sheet, Spinner, type IconName } from '@/ui';
-import { fmtKm, fmtMDWeek, modeIcon, navQuery, tightDetail, travelMinutes } from './model';
+import { fmtKm, fmtMDWeek, modeIcon, segmentRoute, tightDetail, travelMinutes } from './model';
 import s from './plan.module.css';
 
 export default function SegmentSheet({ fromId, toId }: { fromId: string; toId: string }) {
@@ -56,8 +56,10 @@ function Segment({ trip, seg }: { trip: Trip; seg: SegmentInfo }) {
   const { from, to, estimate } = seg;
   const date = from.date && from.date === to.date ? from.date : null;
   const ai = useDayCheck(trip.id, date);
-  const origin = navQuery(from),
-    dest = navQuery(to);
+  // 起點沒有特定地點（起床）：從目前位置出發；終點沒有特定地點（休息）：不放地圖路線
+  const route = segmentRoute(from, to);
+  const routeUrl = (mode: TravelMode) =>
+    route ? (route.origin ? gmapsDirections(route.origin, route.dest, mode) : gmapsNavigate(route.dest, mode)) : undefined;
   const travel = travelMinutes(seg);
   // 兩站在不同天（例如打開後改了日期）：時間差沒有意義，不算空檔也不警告
   const crossDay = !!from.date && !!to.date && from.date !== to.date;
@@ -206,21 +208,27 @@ function Segment({ trip, seg }: { trip: Trip; seg: SegmentInfo }) {
         </>
       )}
 
-      <ListGroup title="用 Google 地圖查路線">
-        {MODES.map((m) => (
-          <ListRow
-            key={m.mode}
-            icon={m.icon}
-            title={m.label}
-            subtitle={m.sub}
-            end={suggested === m.mode ? <span className={s.aiPill}>AI 建議</span> : undefined}
-            href={gmapsDirections(origin, dest, m.mode)}
-          />
-        ))}
-      </ListGroup>
+      {route ? (
+        <ListGroup title={route.origin ? '用 Google 地圖查路線' : '用 Google 地圖查路線（從目前位置出發）'}>
+          {MODES.map((m) => (
+            <ListRow
+              key={m.mode}
+              icon={m.icon}
+              title={m.label}
+              subtitle={m.sub}
+              end={suggested === m.mode ? <span className={s.aiPill}>AI 建議</span> : undefined}
+              href={routeUrl(m.mode)}
+            />
+          ))}
+        </ListGroup>
+      ) : (
+        <Note tone="info">
+          <span>「{to.title}」沒有特定地點，不需要導航。要導航的話，可以在這一站的「編輯 → 進階」填寫導航目的地。</span>
+        </Note>
+      )}
 
       <ListGroup title="其他">
-        <ListRow icon="map" title="Apple 地圖" subtitle={`從目前位置導航到「${to.title}」`} href={appleMapsNavigate(dest)} />
+        {route && <ListRow icon="map" title="Apple 地圖" subtitle={`從目前位置導航到「${to.title}」`} href={appleMapsNavigate(route.dest)} />}
         <ListRow icon="traffic" title="即時路況圖層" subtitle="看目前位置附近哪裡在塞車" href={gmapsTraffic} />
       </ListGroup>
 

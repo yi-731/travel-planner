@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Item, Trip } from '@/domain/types';
-import { cityHint, geocodeMissing, geocodePlace, parseMapsLink, placeQueries, THROTTLE_MS } from './geocode';
+import { canGeocode, cityHint, geocodeMissing, geocodePlace, parseMapsLink, placeQueries, THROTTLE_MS } from './geocode';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -54,6 +54,25 @@ describe('placeQueries / cityHint', () => {
     expect(placeQueries({ title: '京都站' }, '京都')).toEqual(['京都站']);
     expect(placeQueries({ address: '関西空港駅', title: '桃園機場 → 關西機場' }, '京都')).toEqual(['関西空港駅']);
     expect(placeQueries({ title: '  ' }, '京都')).toEqual([]);
+  });
+  it('有地點辨識結果：先查導航目的地，再查名稱、地址', () => {
+    const place = { query: 'Harbor Inn, Las Vegas, NV, USA', name: 'Harbor Inn', source: 'rule' as const };
+    expect(placeQueries({ title: '★ 先放行李', address: '1000 S Las Vegas Blvd', place }, '拉斯維加斯')).toEqual([
+      'Harbor Inn, Las Vegas, NV, USA',
+      'Harbor Inn',
+      '1000 S Las Vegas Blvd',
+      '★ 先放行李',
+    ]);
+    // 路線不拿來查
+    expect(placeQueries({ title: 'Uber', address: 'LAS → Maple Lodge', place: { query: 'Maple Lodge, Las Vegas, NV, USA', name: 'Maple Lodge', source: 'rule' } }, '')).toEqual([
+      'Maple Lodge, Las Vegas, NV, USA',
+      'Maple Lodge',
+      'Uber',
+    ]);
+  });
+  it('canGeocode：判斷為沒有地點（起床、整理）的不定位', () => {
+    expect(canGeocode({ title: '起床', place: { query: '起床', source: 'rule', navigable: false } })).toBe(false);
+    expect(canGeocode({ title: '清水寺', place: { query: '清水寺, Kyoto, Japan', source: 'rule', navigable: true } })).toBe(true);
   });
   it('cityHint 取標籤的城市部分', () => {
     expect(cityHint({ city: 'KYOTO', cityGeo: { lat: 0, lng: 0, label: '京都，日本' } })).toBe('京都');
@@ -167,5 +186,97 @@ describe('geocodeMissing', () => {
     await vi.runAllTimersAsync();
     await check;
     expect(got).toEqual(['清水寺']);
+  });
+});
+
+describe('geocodeMissing（多城市行程）', () => {
+  const LV = { lat: 36.175, lng: -115.1372, en: 'Las Vegas', countryCode: 'US' };
+  const it_ = (id: string, date: string, query: string, over: Partial<Item> = {}): Item => ({
+    id, date, title: id, type: 'sight', done: false, createdAt: 0, updatedAt: 0, place: { query, name: id, source: 'rule' }, ...over,
+  });
+  const multi = (items: Item[]): Trip => ({
+    id: 't', name: '美西', city: '洛杉磯', cityGeo: { lat: 34.0522, lng: -118.2437, label: '洛杉磯，美國' }, startDate: '2026-12-03', endDate: '2026-12-05',
+    localCurrency: 'USD', homeCurrency: 'TWD', rate: 32, members: ['我'], items, expenses: [], cover: { kind: 'orb' }, ai: { dayChecks: {} },
+    days: { '2026-12-03': { city: '洛杉磯' }, '2026-12-04': { city: '拉斯維加斯', geo: LV } }, createdAt: 0, updatedAt: 0,
+  });
+
+  it('用那天城市當搜尋中心；超過 300 公里（另一個城市）的結果不採用；navigable = false 的不查', async () => {
+    vi.useFakeTimers();
+    const calls: URL[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const u = new URL(String(input));
+        calls.push(u);
+        const q = u.searchParams.get('q') ?? '';
+        // 「Grand Plaza」在洛杉磯也有同名的地點（約 370 公里外）
+        const coords = q.startsWith('Grand Plaza') ? [[-118.3, 34.1], [-115.17, 36.12]] : [];
+        return new Response(JSON.stringify({ features: coords.map((c) => ({ geometry: { coordinates: c } })) }), { status: 200 });
+      }),
+    );
+    const t = multi([
+      it_('Grand Plaza', '2026-12-04', 'Grand Plaza, Las Vegas, NV, USA'),
+      it_('起床', '2026-12-04', '起床, Las Vegas, NV, USA', { place: { query: '起床', source: 'rule', navigable: false } }),
+    ]);
+    const got: [string, { lat: number; lng: number }][] = [];
+    const p = geocodeMissing(t, (id, g) => got.push([id, g]));
+    await vi.runAllTimersAsync();
+    expect(await p).toBe(1);
+    expect(got).toEqual([['Grand Plaza', { lat: 36.12, lng: -115.17 }]]);
+    expect(calls[0].searchParams.get('q')).toBe('Grand Plaza, Las Vegas, NV, USA');
+    expect(calls[0].searchParams.get('lat')).toBe('36.175');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('那天的城市還沒有座標：先定位那個城市當中心（不用幾百公里外的行程城市）', async () => {
+    vi.useFakeTimers();
+    const calls: URL[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const u = new URL(String(input));
+        calls.push(u);
+        if (u.host === 'geocoding-api.open-meteo.com') {
+          return new Response(JSON.stringify({ results: [{ name: 'Las Vegas', admin1: 'Nevada', latitude: 36.175, longitude: -115.1372, feature_code: 'PPLA2', population: 641903, country_code: 'US' }] }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ features: [{ geometry: { coordinates: [-115.17, 36.12] } }] }), { status: 200 });
+      }),
+    );
+    const t = multi([it_('Grand Plaza', '2026-12-05', 'Grand Plaza, Las Vegas, NV, USA'), it_('Lakeside Buffet', '2026-12-05', 'Lakeside Buffet, Las Vegas, NV, USA')]);
+    t.days = { '2026-12-03': { city: '洛杉磯' }, '2026-12-05': { city: '拉斯維加斯' } };
+    const got: string[] = [];
+    const p = geocodeMissing(t, (id) => got.push(id));
+    await vi.runAllTimersAsync();
+    expect(await p).toBe(2);
+    expect(got).toEqual(['Grand Plaza', 'Lakeside Buffet']);
+    // 城市只查一次
+    expect(calls.filter((u) => u.host === 'geocoding-api.open-meteo.com')).toHaveLength(1);
+    expect(calls.find((u) => u.host === 'photon.komoot.io')!.searchParams.get('lat')).toBe('36.175');
+  });
+
+  it('目的地在別的城市（一日遊）：先定位那個城市，再以它為中心查', async () => {
+    vi.useFakeTimers();
+    const calls: URL[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const u = new URL(String(input));
+        calls.push(u);
+        if (u.host === 'geocoding-api.open-meteo.com') {
+          return new Response(JSON.stringify({ results: [{ name: 'Page', admin1: 'Arizona', latitude: 36.9147, longitude: -111.4558, feature_code: 'PPL', population: 7490, country_code: 'US' }] }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ features: [{ geometry: { coordinates: [-111.41, 36.9] } }] }), { status: 200 });
+      }),
+    );
+    const t = multi([it_('Slot Canyon', '2026-12-04', 'Slot Canyon Trail, Page, AZ, USA')]);
+    const got: string[] = [];
+    const p = geocodeMissing(t, (id) => got.push(id));
+    await vi.runAllTimersAsync();
+    expect(await p).toBe(1);
+    expect(calls[0].host).toBe('geocoding-api.open-meteo.com');
+    expect(calls[0].searchParams.get('name')).toBe('Page');
+    const photon = calls.find((u) => u.host === 'photon.komoot.io')!;
+    expect(photon.searchParams.get('lat')).toBe('36.9147');
+    expect(got).toEqual(['Slot Canyon']);
   });
 });

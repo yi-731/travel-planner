@@ -1,12 +1,14 @@
 /**
- * App 設定：外觀、AI 助理（API 金鑰、模型、測試連線）、預設本國貨幣、原生功能（觸覺回饋、出發提醒）。
+ * App 設定：外觀、AI 助理（API 金鑰、模型、測試連線、每趟花費上限、匯入後自動辨識地點、各功能大約費用）、
+ * 預設本國貨幣、原生功能（觸覺回饋、出發提醒）。
  * 每個設定改了就立即存（沒有「儲存」按鈕），和 iOS 設定 App 一樣。
  */
 import { useState } from 'react';
-import { AI_MODELS, aiCostHint, COMMON_CURRENCIES } from '@/domain/constants';
+import { AI_BUDGET_CHOICES, AI_FEATURES, AI_MODELS, aiCostHint, COMMON_CURRENCIES } from '@/domain/constants';
 import type { ThemePref } from '@/domain/types';
+import { fmtLimit, fmtTwdRange } from '@/features/ai/aiUsage';
 import { haptic, isNative } from '@/platform';
-import { aiErrorMessage, resolveModel, testConnection } from '@/services/ai';
+import { aiErrorMessage, budgetLimit, estimateFeatureTwd, resolveModel, testConnection } from '@/services/ai';
 import { useData } from '@/store/data';
 import { useUI } from '@/store/ui';
 import { Button, Field, Icon, ListGroup, ListRow, Picker, Select, Sheet, Spinner, type PickOption } from '@/ui';
@@ -33,7 +35,10 @@ export default function AppSettingsSheet() {
   const [test, setTest] = useState<TestState>({ status: 'idle' });
   const hasKey = !!settings.anthropicApiKey.trim();
   const model = resolveModel(settings.aiModel);
-  const leads = LEAD_MINUTES.includes(settings.reminderLeadMin) ? LEAD_MINUTES : [...LEAD_MINUTES, settings.reminderLeadMin].sort((a, b) => a - b);
+  const budget = budgetLimit(settings);
+  const budgets = AI_BUDGET_CHOICES.includes(budget) ? AI_BUDGET_CHOICES : [...AI_BUDGET_CHOICES.filter((b) => b > 0), budget, 0].sort((a, b) => (a || Infinity) - (b || Infinity));
+  const placesCost = fmtTwdRange(estimateFeatureTwd(model, 'places'));
+  const leads =LEAD_MINUTES.includes(settings.reminderLeadMin) ? LEAD_MINUTES : [...LEAD_MINUTES, settings.reminderLeadMin].sort((a, b) => a - b);
 
   const saveKey = (v: string) => {
     const key = v.trim();
@@ -86,7 +91,7 @@ export default function AppSettingsSheet() {
             <span className={s.aiIcon} aria-hidden>
               <Icon name="spark" size={18} stroke={2.2} />
             </span>
-            <p>排程檢查、景點推薦、穿搭建議、收據辨識會用到 Claude。費用依 Anthropic 用量計，由你的 API 金鑰付費，金鑰只存在這支手機。</p>
+            <p>地點辨識、排程檢查、景點推薦、穿搭建議、收據辨識會用到 Claude。費用依 Anthropic 用量計，由你的 API 金鑰付費，金鑰只存在這支手機。</p>
           </div>
 
           <Field label="API 金鑰">
@@ -163,6 +168,51 @@ export default function AppSettingsSheet() {
               {test.message}
             </p>
           )}
+
+          <Select
+            label="每趟 AI 花費上限"
+            hint={
+              budget
+                ? `一趟旅程的 AI 花費到 ${fmtLimit(budget)} 就先暫停，調高上限就能繼續用。`
+                : '不限制花費，請自行留意 Anthropic 後台的帳單。'
+            }
+            value={String(budget)}
+            onChange={(e) => updateSettings({ aiTripBudgetTwd: Number(e.target.value) })}
+          >
+            {budgets.map((b) => (
+              <option key={b} value={String(b)}>
+                {fmtLimit(b)}
+              </option>
+            ))}
+          </Select>
+
+          <div className={s.switchRow}>
+            <span className={s.switchText}>
+              <b>匯入後自動用 AI 辨識地點</b>
+              <small>匯入或同步試算表後，在背景判斷每天的城市與每一站的導航目的地（每 60 站{placesCost}）</small>
+            </span>
+            <Switch
+              checked={settings.aiAutoResolvePlaces}
+              label="匯入後自動用 AI 辨識地點"
+              onChange={(v) => updateSettings({ aiAutoResolvePlaces: v })}
+            />
+          </div>
+
+          <div className={s.costBox}>
+            <b className={s.costHead}>各功能大約費用</b>
+            <ul className={s.costList}>
+              {AI_FEATURES.map((f) => (
+                <li key={f.key}>
+                  <span>
+                    {f.label}
+                    <small>{f.unit}</small>
+                  </span>
+                  <span className="num">{fmtTwdRange(estimateFeatureTwd(model, f.key))}</span>
+                </li>
+              ))}
+            </ul>
+            <p className={s.padHint}>依上面選的模型估算，實際依 Anthropic 回傳的用量計費。每趟已用多少，可在「更多」分頁的 AI 助理查看。</p>
+          </div>
         </div>
       </ListGroup>
 

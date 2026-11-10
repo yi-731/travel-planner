@@ -37,6 +37,19 @@ export interface Item {
   rating?: number;
   note?: string;
   link?: string;
+  /**
+   * 導航目的地（地點辨識產生，含城市／州／國家背景，例如「Harbor Inn, Portland, OR, USA」）。
+   * 有值時導航、地圖定位都優先用它；source = manual 的不會被自動辨識覆蓋。
+   */
+  place?: { query: string; name?: string; source: 'rule' | 'ai' | 'manual'; navigable?: boolean };
+  /** 交通類行程的起訖（試算表寫「A → B」） */
+  route?: { from: string; to: string };
+  /** 試算表的「★ 必做」「◇ 可省略」標記 */
+  flag?: 'must' | 'optional';
+  /** 使用者原本的分類文字（例如「演唱會」「美術館」「早餐」），顯示用；type 是對應到的標準類型 */
+  tag?: string;
+  /** 交通說明（例如「步行 15 分 / 0.9 mile」「Uber 15 分」），顯示用，不拿去導航 */
+  transit?: string;
   done: boolean;
   createdAt: number;
   updatedAt: number;
@@ -91,6 +104,8 @@ export interface DailyWeather {
   sunset?: string;
   /** forecast = 即時預報；climate = 歷年同期平均（超過 16 天的日期） */
   kind: 'forecast' | 'climate';
+  /** 這天天氣所屬的城市（多城市行程每天可能不同），例如「波特蘭」 */
+  place?: string;
 }
 
 export interface WeatherCache {
@@ -98,6 +113,33 @@ export interface WeatherCache {
   lat: number;
   lng: number;
   days: DailyWeather[];
+  /** 抓天氣時每天使用的座標摘要（多城市行程換城市或改日期時判斷過期用） */
+  locKey?: string;
+}
+
+/** 一天的背景資訊（多城市行程的關鍵：天氣、導航都依當天城市） */
+export interface DayMeta {
+  /** 試算表日期列去掉日期後的原文，例如「西雅圖 → 波特蘭｜住 Harbor Inn｜演唱會」 */
+  label?: string;
+  /** 當天主要城市（過夜的城市；顯示用，中英文皆可），例如「波特蘭」 */
+  city?: string;
+  /** 當天住宿 */
+  lodging?: string;
+  /** 城市定位（天氣、導航背景、地圖中心） */
+  geo?: LatLng & { label?: string; en?: string; admin1?: string; timezone?: string; countryCode?: string };
+  /** rule＝規則／城市對照表；ai＝AI 判斷；manual＝使用者手動（不會被自動覆蓋） */
+  source?: 'rule' | 'ai' | 'manual';
+}
+
+/** 本趟 AI 累計用量（依 Anthropic 回傳的實際 token 數與官方單價估算） */
+export interface AIUsage {
+  /** 累計費用（新台幣） */
+  costTwd: number;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** 依功能累計的費用（新台幣），key 例如 dayCheck、recommend、packing、receipt、places */
+  byFeature: Record<string, number>;
 }
 
 export interface TripCover {
@@ -141,7 +183,13 @@ export interface Trip {
     dayChecks: Record<ISODate, DayCheck>;
     /** AI 依天氣給的穿搭建議 */
     packing?: { at: number; text: string; tips: string[] };
+    /** 本趟 AI 用量與費用 */
+    usage?: AIUsage;
+    /** 上次 AI 地點辨識的時間 */
+    placesResolvedAt?: number;
   };
+  /** 每天的城市／住宿等背景（key：日期） */
+  days?: Record<ISODate, DayMeta>;
   weather?: WeatherCache;
   /** 範例行程（首次開啟時建立），使用者改過設定後移除 */
   isExample?: boolean;
@@ -164,4 +212,8 @@ export interface Settings {
   defaultHomeCurrency: string;
   /** 上次「備份全部資料」成功的時間（ms）；沒備份過則沒有 */
   lastBackupAt?: number;
+  /** 每趟行程 AI 花費上限（新台幣）；0 = 不限制 */
+  aiTripBudgetTwd: number;
+  /** 匯入行程後自動用 AI 辨識地點（有金鑰且未超過預算時） */
+  aiAutoResolvePlaces: boolean;
 }

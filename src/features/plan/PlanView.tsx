@@ -1,6 +1,7 @@
 /**
  * 「行程」分頁：選一天 → 看當天時間軸。
- * 由上而下：標題（第幾天、日期、預估花費）→ 日期列 → 主要動作（新增、AI 排程檢查、AI 推薦）
+ * 由上而下：標題（第幾天、日期、預估花費）→ 日期列 → 當天城市一行（城市、住宿、天氣；點了開「這一天」）
+ * → 主要動作（新增、AI 排程檢查、AI 推薦）
  * → AI 檢查結果 → 時間軸（左右滑動換天）→ 還沒有日期的行程點。
  * 顯示規則（選哪一天、移動資訊文字）在 ./model.ts，有測試。
  */
@@ -12,15 +13,27 @@ import { daySegments, itemsOfDay, validDayCheck } from '@/domain/schedule';
 import type { ISODate, Trip } from '@/domain/types';
 import { useDayCheck } from '@/features/ai/useDayCheck';
 import { haptic } from '@/platform';
+import { useTripWeather } from '@/services/hooks';
+import { dayMetaFor } from '@/services/places';
+import { weatherInfo } from '@/services/weather';
 import { useActiveTrip } from '@/store/data';
 import { useUI } from '@/store/ui';
-import { Button, DayStrip, Empty, ListGroup, ListRow, Note, PageHead, Spinner } from '@/ui';
-import { neighborDay, planEyebrow, resolveDate } from './model';
+import { Button, DayStrip, Empty, Icon, ListGroup, ListRow, Note, PageHead, Spinner } from '@/ui';
+import { dayHeader, neighborDay, planEyebrow, resolveDate } from './model';
 import { Timeline } from './Timeline';
 import { useDaySwipe } from './useDaySwipe';
 import s from './plan.module.css';
 
 const EASE = [0.2, 0.8, 0.2, 1] as const;
+
+/** 服務還在開發或出錯時不要讓整頁壞掉 */
+function attempt<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+}
 
 export default function PlanView() {
   const trip = useActiveTrip();
@@ -84,6 +97,8 @@ function Plan({ trip }: { trip: Trip }) {
       <PageHead eyebrow={<span className="num">{planEyebrow(days, date, items, trip.localCurrency)}</span>} title="行程" />
 
       {days.length > 0 && <DayStrip days={days} value={date} onChange={goTo} />}
+
+      {date && <DayLine trip={trip} date={date} />}
 
       {(date || days.length === 0) && (
         <div className={s.actionsWrap}>
@@ -213,6 +228,53 @@ function Plan({ trip }: { trip: Trip }) {
         </section>
       )}
     </div>
+  );
+}
+
+/** 日期列下方一行：當天城市（粗體）、住宿、天氣；點了開「這一天」看原文與修改城市 */
+function DayLine({ trip, date }: { trip: Trip; date: ISODate }) {
+  const openSheet = useUI((st) => st.openSheet);
+  const weather = useTripWeather(trip);
+  const meta = attempt(() => dayMetaFor(trip, date), trip.days?.[date]);
+  const { city, lodging } = dayHeader(meta);
+  const wx = attempt(() => weather.forDate(date), undefined);
+  const w = wx ? attempt(() => weatherInfo(wx.code), null) : null;
+  const lo = wx ? Math.round(wx.tMin) : 0,
+    hi = wx ? Math.round(wx.tMax) : 0;
+  const label = [
+    city ? `這天在${city}` : '還沒設定這天的城市',
+    lodging ? `住 ${lodging}` : '',
+    wx && w ? `${w.label} ${lo} 到 ${hi} 度` : '',
+    '查看或修改',
+  ]
+    .filter(Boolean)
+    .join('，');
+  return (
+    <button
+      type="button"
+      className={s.dayLine}
+      aria-label={label}
+      onClick={() => {
+        void haptic('light');
+        openSheet({ name: 'dayInfo', date });
+      }}
+    >
+      <span className={s.dayWhere} aria-hidden>
+        {city ? <b className={s.dayCity}>{city}</b> : <span className={s.dayAsk}>這天在哪個城市？</span>}
+        {lodging && <span className={s.dayLodging}>住 {lodging}</span>}
+      </span>
+      {wx && w && (
+        <span className={s.dayWx} aria-hidden>
+          <Icon name={w.icon} size={16} stroke={2.1} />
+          <span className="num">
+            {lo}°–{hi}°
+          </span>
+        </span>
+      )}
+      <span className={s.dayChev} aria-hidden>
+        <Icon name="chevron" size={14} stroke={2.2} />
+      </span>
+    </button>
   );
 }
 

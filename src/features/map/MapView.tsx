@@ -1,17 +1,19 @@
 /**
  * 「地圖」分頁：選一天 → 看當天站點在地圖上的位置與順序，一鍵用 Google 地圖導航（Apple 地圖在地點詳情）。
- * 由上而下：標題 → 日期列 → 地圖卡（TripMap）→ 當天摘要＋整天路線 → 附近快捷（一排膠囊）→ 站點清單（StopList）
+ * 由上而下：標題 → 日期列 → 地圖卡（TripMap；當天沒有任何定位的站點時，以當天城市為中心）→ 當天摘要（含當天城市）＋整天路線 → 附近快捷（一排膠囊）→ 站點清單（StopList）
  * → 找不到位置的提示 → 匯出到 Google 我的地圖（App 裡只有這裡能匯出）。
  * 顯示規則（選哪一天、編號、框選、連結）在 ./model.ts，有測試。
  */
 import { useReducedMotion } from 'motion/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { fmtMDW, today, tripDays } from '@/domain/dates';
+import { canNavigate } from '@/domain/schedule';
 import type { Trip } from '@/domain/types';
 import { exportFile, haptic } from '@/platform';
 import { tripToMyMapsCsv } from '@/services/exporter';
 import { useAutoGeocode } from '@/services/hooks';
 import { gmapsDayRoute } from '@/services/links';
+import { dayMetaFor } from '@/services/places';
 import { useActiveTrip } from '@/store/data';
 import { useUI } from '@/store/ui';
 import { Button, DayStrip, Empty, Icon, LinkButton, ListGroup, ListRow, Note, PageHead, Spinner } from '@/ui';
@@ -22,6 +24,15 @@ import { useDarkTheme } from './useDarkTheme';
 import s from './map.module.css';
 
 const MY_MAPS_URL = 'https://www.google.com/maps/d/';
+
+/** 服務還在開發或出錯時不要讓整頁壞掉 */
+function attempt<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+}
 
 export default function MapView() {
   const trip = useActiveTrip();
@@ -47,7 +58,15 @@ function TripMapPage({ trip }: { trip: Trip }) {
 
   const stops = useMemo(() => dayStops(trip, date), [trip, date]);
   const km = straightKm(stops);
-  const route = useMemo(() => gmapsDayRoute(stops.map((st) => st.item)), [stops]);
+  // 整天路線只串有地點的站（起床、整理這類不算）
+  const route = useMemo(() => gmapsDayRoute(stops.map((st) => st.item).filter(canNavigate)), [stops]);
+  // 當天的城市（多城市行程每天不同）：當天沒有任何定位的站點時，地圖以這個城市為中心
+  const day = useMemo(() => (date ? attempt(() => dayMetaFor(trip, date), trip.days?.[date]) : undefined), [trip, date]);
+  const dayCity = day?.city?.trim() || '';
+  const center = useMemo(() => {
+    const g = day?.geo ?? trip.cityGeo;
+    return g ? { lat: g.lat, lng: g.lng } : null;
+  }, [day?.geo, trip.cityGeo]);
 
   // 背景補座標：顯示「定位中 3/8…」
   const geo = useAutoGeocode(trip);
@@ -55,7 +74,7 @@ function TripMapPage({ trip }: { trip: Trip }) {
   const geocoding = geo.running && geo.pending > 0 ? geocodeLabel(runTotal, geo.pending) : null;
   // running：定位中；waiting：還有待定位的（剛開啟或連線中斷，稍後會再試）；done：查過了，沒座標的就是找不到
   const geoState: GeoState = geo.running ? 'running' : geo.pending > 0 ? 'waiting' : 'done';
-  const missing = geoState === 'done' ? stops.filter((st) => !st.geo).map((st) => st.item) : [];
+  const missing = geoState === 'done' ? stops.filter((st) => !st.geo && canNavigate(st.item)).map((st) => st.item) : [];
 
   // 選取的站點：換天就清掉；被刪掉或失去座標也清掉
   const [focusId, setFocusId] = useState<string | null>(null);
@@ -125,7 +144,7 @@ function TripMapPage({ trip }: { trip: Trip }) {
           selectedId={selectedId}
           onSelect={setFocusId}
           onOpen={(itemId) => openSheet({ name: 'place', itemId })}
-          city={trip.cityGeo ?? null}
+          city={center}
           dark={dark}
           frameKey={`${trip.id}|${date ?? ''}`}
           geocoding={geocoding}
@@ -138,6 +157,7 @@ function TripMapPage({ trip }: { trip: Trip }) {
           <div className={s.dayStat}>
             <span className="eyebrow num">
               DAY {dayIndex + 1} · {timeSpan(stops) || fmtMDW(date)}
+              {dayCity ? ` · ${dayCity}` : ''}
             </span>
             <span className={s.dayNums}>
               <span className="serif num">{stops.length}</span>

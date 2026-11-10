@@ -12,6 +12,7 @@ export const SHEETS: Registry = {
   place: lazy(() => import('@/features/place/PlaceSheet')),
   itemForm: lazy(() => import('@/features/plan/ItemFormSheet')),
   segment: lazy(() => import('@/features/plan/SegmentSheet')),
+  dayInfo: lazy(() => import('@/features/plan/DayInfoSheet')),
   weather: lazy(() => import('@/features/weather/WeatherSheet')),
   recommend: lazy(() => import('@/features/ai/RecommendSheet')),
   tripPicker: lazy(() => import('@/features/trips/TripPickerSheet')),

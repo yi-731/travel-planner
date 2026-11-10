@@ -2,9 +2,9 @@
  * 匯入頁用的純函式（無 React），測試在 model.test.ts。
  */
 import { fmtMD } from '@/domain/dates';
-import type { Trip } from '@/domain/types';
+import type { Settings, Trip } from '@/domain/types';
 import { currencyForCountry, currencyLabel } from '@/features/trips/model';
-import type { ImportResult } from '@/services/importer';
+import { applyImport, compareDayKeys, suggestTripCity, type ImportResult } from '@/services/importer';
 import { cityNameVariants, findCityAlias } from '@/services/weather';
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -63,6 +63,8 @@ export interface NewTripDraft {
   result: ImportResult;
   /** 每筆記帳的幣別（與 result.expenses 同順序）：三碼幣別、UNSET 或 YEN */
   rows: string[];
+  /** 每個行程點預估花費寫明的幣別（與 result.items 同順序）：三碼幣別、YEN，沒寫是 null */
+  itemRows?: (string | null)[];
   /** 本國貨幣（不算當地貨幣） */
   home: string;
   /** 試算表沒寫明、城市也認不出來時用的貨幣（目前行程的當地貨幣，沒有就是 JPY） */
@@ -77,9 +79,15 @@ export interface NewTripDraft {
  */
 export function newTripDraft(parse: (local: string) => ImportResult, home: string, tripCurrency: string | undefined): NewTripDraft {
   const result = parse(UNSET);
-  const other = parse('CNY').expenses;
+  const cny = parse('CNY');
+  const other = cny.expenses;
   const rows = result.expenses.map((e, i) => (e.currency === UNSET ? UNSET : e.currency === other[i]?.currency ? e.currency : YEN));
-  return { result, rows, home, fallback: tripCurrency || 'JPY', fromTrip: !!tripCurrency };
+  // 行程點的預估花費：當地貨幣是 UNSET 時，寫明的幣別都會記在 costCurrency；
+  // 只寫「¥」的，用人民幣辨識時就不是 JPY 了（變成當地貨幣、不另外記）
+  const itemRows = result.items.map((it, i) =>
+    !it.costCurrency ? null : it.costCurrency === 'JPY' && cny.items[i]?.costCurrency !== 'JPY' ? YEN : it.costCurrency,
+  );
+  return { result, rows, itemRows, home, fallback: tripCurrency || 'JPY', fromTrip: !!tripCurrency };
 }
 
 /** 第 i 筆記帳在試算表裡有沒有寫幣別（沒寫的要等決定當地貨幣才知道） */
@@ -107,7 +115,9 @@ export type CurrencyFrom = 'sheet' | 'city' | 'fallback';
 export function pickNewTripCurrency(d: NewTripDraft, city: string): { code: string; from: CurrencyFrom; yen: string } {
   const byCity = cityCurrency(city);
   const yen = (byCity ?? d.fallback) === 'CNY' ? 'CNY' : 'JPY';
-  const written = d.rows.filter((c) => c !== UNSET).map((c) => ({ currency: c === YEN ? yen : c }));
+  // 試算表寫明的幣別：記帳的幣別，加上行程點預估花費寫的（「$25」）
+  const marks = [...d.rows.filter((c) => c !== UNSET), ...(d.itemRows ?? []).filter((c): c is string => !!c)];
+  const written = marks.map((c) => ({ currency: c === YEN ? yen : c }));
   const bySheet = guessLocalCurrency({ expenses: written }, d.home, '');
   if (bySheet) return { code: bySheet, from: 'sheet', yen };
   if (byCity) return { code: byCity, from: 'city', yen };
@@ -120,7 +130,10 @@ export function resolveNewTrip(d: NewTripDraft, city: string): { localCurrency: 
   const expenses = d.result.expenses.map((e, i) =>
     d.rows[i] === UNSET ? { ...e, currency: code } : d.rows[i] === YEN ? { ...e, currency: yen } : e,
   );
-  return { localCurrency: code, result: { ...d.result, expenses } };
+  const items = d.itemRows?.some((c) => c === YEN)
+    ? d.result.items.map((it, i) => (d.itemRows![i] === YEN ? { ...it, costCurrency: yen } : it))
+    : d.result.items;
+  return { localCurrency: code, result: { ...d.result, items, expenses } };
 }
 
 /** 預覽「建立為新行程」的貨幣說明：新行程會用哪個當地貨幣、沒寫幣別的記帳怎麼算 */
@@ -149,3 +162,89 @@ export function errorText(e: unknown, fallback: string): string {
   if (!m || /^todo\b/i.test(m.trim())) return fallback;
   return m;
 }
+
+/* ---------- 地點辨識預覽 ---------- */
+
+/** 預覽「每天的城市」的一列 */
+export interface DayRow {
+  key: string;
+  /** 3/8、第 1 天 */
+  date: string;
+  /** 「台北 → 西雅圖」或「波特蘭」；認不出城市時是空字串 */
+  route: string;
+  lodging?: string;
+  /** 日期列原文（認不出城市時顯示） */
+  label: string;
+}
+
+/** 試算表的日期列 → 預覽用的每天城市與住宿（依日期排序） */
+export function dayRows(r: Pick<ImportResult, 'days'>): DayRow[] {
+  const days = r.days ?? {};
+  return Object.keys(days)
+    .sort(compareDayKeys)
+    .map((key) => {
+      const d = days[key];
+      const rel = /^__D(\d+)$/.exec(key);
+      const cities = d.cities?.length ? d.cities : d.city ? [d.city] : [];
+      return {
+        key,
+        date: rel ? `第 ${+rel[1]} 天` : fmtMD(key),
+        route: cities.join(' → '),
+        ...(d.lodging ? { lodging: d.lodging } : {}),
+        label: d.label.replace(/\s*[｜|]\s*/g, ' · '),
+      };
+    });
+}
+
+/** 預覽的一行說明：「3/8 台北 → 西雅圖 · 住 Hotel Zephyr」 */
+export function dayRowText(d: DayRow): string {
+  const main = d.route || d.label;
+  return d.lodging ? `${main} · 住 ${d.lodging}` : main;
+}
+
+/** ★ 必做、◇ 可省略各幾個 */
+export function flagCounts(r: Pick<ImportResult, 'items'>): { must: number; optional: number } {
+  let must = 0, optional = 0;
+  for (const it of r.items) {
+    if (it.flag === 'must') must++;
+    else if (it.flag === 'optional') optional++;
+  }
+  return { must, optional };
+}
+
+/** 沒填城市時，新行程會用的城市（日期列最常過夜的城市） */
+export const suggestedCity = (r: Pick<ImportResult, 'days'>) => suggestTripCity(r.days);
+
+/**
+ * 預覽表的「導航目的地」：實際套用到一個暫時的新行程，取前 n 個行程點的 place.query
+ * （和建立後一模一樣的規則，使用者可以先確認 App 有沒有看懂地點）。出錯時回傳空陣列。
+ */
+export function previewPlaces(r: ImportResult, city: string, n: number): string[] {
+  try {
+    const scratch: Trip = {
+      id: 'preview', name: 'preview', city, startDate: null, endDate: null, localCurrency: 'USD', homeCurrency: 'TWD', rate: 1,
+      members: ['我'], items: [], expenses: [], cover: { kind: 'orb', hue: 0 }, ai: { dayChecks: {} }, createdAt: 0, updatedAt: 0,
+    };
+    const t = applyImport(scratch, { ...r, expenses: [] }, 'new');
+    return t.items.slice(0, n).map((it) => it.place?.query?.trim() ?? '');
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 匯入後要不要自動用 AI 辨識地點：設定開著、有金鑰、本趟 AI 預算還沒用完，
+ * 而且有還沒被 AI 或使用者確認過的行程點（同步後沒變的行程點不會再花一次）。
+ */
+export function shouldAutoResolve(
+  trip: Pick<Trip, 'items'> | undefined,
+  settings: Pick<Settings, 'aiAutoResolvePlaces'>,
+  ready: boolean,
+  budget: { exceeded: boolean } | null,
+): boolean {
+  if (!trip || !settings.aiAutoResolvePlaces || !ready || !budget || budget.exceeded) return false;
+  return trip.items.some((it) => it.place?.source !== 'ai' && it.place?.source !== 'manual');
+}
+
+/** 自動辨識地點的大約費用（顯示在預覽與提示裡） */
+export const AI_PLACES_COST_HINT = '約 NT$5–10';

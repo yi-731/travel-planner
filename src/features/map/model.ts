@@ -3,7 +3,7 @@
  * 沒有 React／Leaflet，方便寫測試（model.test.ts）。改地圖頁顯示規則時先改這裡。
  */
 import { itemType } from '@/domain/constants';
-import { haversineKm, itemsOfDay, placeQuery } from '@/domain/schedule';
+import { canNavigate, haversineKm, itemsOfDay, placeQuery } from '@/domain/schedule';
 import type { ISODate, Item, LatLng, Trip } from '@/domain/types';
 import { gmapsSearch, gmapsTraffic } from '@/services/links';
 import type { IconName } from '@/ui/Icon';
@@ -130,8 +130,26 @@ export function timeSpan(stops: Stop[]): string {
   return first === last ? first : `${first}–${last}`;
 }
 
-/** 導航目的地（地址優先，否則名稱） */
-export const navQuery = (it: Pick<Item, 'address' | 'title'>) => placeQuery(it);
+/** 導航目的地（地點辨識的目的地優先，其次地址，最後名稱） */
+export const navQuery = (it: Pick<Item, 'address' | 'title' | 'place'>) => placeQuery(it);
+
+export interface StopPlace {
+  /** 清單第二行的地點文字 */
+  text: string;
+  /** false：起床、整理這類沒有特定地點的（清單變淡、不放導航鈕、不說「找不到位置」） */
+  navigable: boolean;
+}
+
+/**
+ * 清單第二行：導航目的地（含城市背景，例如「Pike Place Market, Seattle, WA, USA」，看得出會導航到哪個城市）；
+ * 和名稱一樣時改顯示地址。沒有特定地點的寫「沒有特定地點」。
+ */
+export function stopPlace(it: Pick<Item, 'address' | 'title' | 'place' | 'geo'>): StopPlace {
+  if (!canNavigate(it)) return { text: '沒有特定地點', navigable: false };
+  const q = (it.place?.query ?? '').trim();
+  const text = q && q !== it.title.trim() && !/^https?:\/\//i.test(q) ? q : stopAddress(it);
+  return { text, navigable: true };
+}
 
 /* ---------------- 定位進度 ---------------- */
 

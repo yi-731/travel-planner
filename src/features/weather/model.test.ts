@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { barInset, fmtUpdated, rainLong, rainText, tempScale } from './model';
+import { barInset, citiesText, distinctCities, fmtUpdated, groupByCity, rainLong, rainText, sameCityName, tempScale } from './model';
 
 describe('tempScale', () => {
   it('spans min..max across days', () => {
@@ -48,5 +48,30 @@ describe('fmtUpdated', () => {
     const now = new Date(2026, 10, 9, 18, 0);
     expect(fmtUpdated(new Date(2026, 10, 9, 9, 5).getTime(), now)).toBe('09:05');
     expect(fmtUpdated(new Date(2026, 10, 8, 21, 40).getTime(), now)).toBe('11/8 21:40');
+  });
+});
+
+describe('多城市', () => {
+  it('同一個城市的不同寫法算同一個', () => {
+    expect(sameCityName('拉斯維加斯', 'Las Vegas')).toBe(true);
+    expect(sameCityName('LAS VEGAS', 'las vegas')).toBe(true);
+    expect(sameCityName('洛杉磯', '拉斯維加斯')).toBe(false);
+    expect(sameCityName('', '')).toBe(false);
+    expect(distinctCities(['洛杉磯', 'Los Angeles', ' ', undefined, '拉斯維加斯'])).toEqual(['洛杉磯', '拉斯維加斯']);
+  });
+  it('依連續的城市分段，不知道城市的日子併進前一段', () => {
+    const city: Record<string, string | undefined> = { a: '洛杉磯', b: 'Las Vegas', c: undefined, d: '拉斯維加斯', e: '洛杉磯' };
+    expect(groupByCity(['a', 'b', 'c', 'd', 'e'], (d) => city[d])).toEqual([
+      { city: '洛杉磯', dates: ['a'] },
+      { city: 'Las Vegas', dates: ['b', 'c', 'd'] },
+      { city: '洛杉磯', dates: ['e'] },
+    ]);
+    expect(groupByCity(['x', 'y'], (d) => (d === 'y' ? '京都' : undefined))).toEqual([{ city: '京都', dates: ['x', 'y'] }]);
+    expect(groupByCity([], () => 'x')).toEqual([]);
+  });
+  it('標題列的城市清單', () => {
+    expect(citiesText(['洛杉磯', '拉斯維加斯', '洛杉磯'])).toBe('洛杉磯、拉斯維加斯');
+    expect(citiesText(['洛杉磯', '拉斯維加斯', '佩吉'])).toBe('洛杉磯 等 3 個城市');
+    expect(citiesText([])).toBe('');
   });
 });
