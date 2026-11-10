@@ -1,7 +1,7 @@
 /**
- * 「地圖」分頁：選一天 → 看當天站點在地圖上的位置與順序，一鍵用 Google／Apple 地圖導航。
- * 由上而下：標題 → 日期列 → 地圖卡（TripMap）→ 當天摘要＋整天路線 → 附近快捷 → 站點清單（StopList）
- * → 找不到位置的提示 → 匯出到 Google 我的地圖。
+ * 「地圖」分頁：選一天 → 看當天站點在地圖上的位置與順序，一鍵用 Google 地圖導航（Apple 地圖在地點詳情）。
+ * 由上而下：標題 → 日期列 → 地圖卡（TripMap）→ 當天摘要＋整天路線 → 附近快捷（一排膠囊）→ 站點清單（StopList）
+ * → 找不到位置的提示 → 匯出到 Google 我的地圖（App 裡只有這裡能匯出）。
  * 顯示規則（選哪一天、編號、框選、連結）在 ./model.ts，有測試。
  */
 import { useReducedMotion } from 'motion/react';
@@ -114,7 +114,7 @@ function TripMapPage({ trip }: { trip: Trip }) {
 
   return (
     <div className={s.page}>
-      <PageHead eyebrow="Google 地圖 · Apple 地圖" title="地圖" />
+      <PageHead title="地圖" />
 
       {days.length > 0 && <DayStrip days={days} value={date} onChange={selectDate} />}
 
@@ -161,9 +161,9 @@ function TripMapPage({ trip }: { trip: Trip }) {
         {QUICK_LINKS.map((q) => (
           <a key={q.key} className={s.q} href={q.href} target="_blank" rel="noopener noreferrer" onClick={() => void haptic('light')}>
             <span className={s.qIcon}>
-              <Icon name={q.icon} size={20} />
+              <Icon name={q.icon} size={18} />
             </span>
-            <span className={s.qLabel}>{q.label}</span>
+            {q.label}
           </a>
         ))}
       </nav>
@@ -171,16 +171,6 @@ function TripMapPage({ trip }: { trip: Trip }) {
       <section className={s.section} aria-label="當天站點">
         <div className={s.secHead}>
           <h2 className={s.secTitle}>站點</h2>
-          {stops.length > 0 && (
-            <span className={s.legend} aria-hidden>
-              <span>
-                <i>G</i>Google 地圖
-              </span>
-              <span>
-                <i>A</i>Apple 地圖
-              </span>
-            </span>
-          )}
         </div>
         {stops.length > 0 ? (
           <StopList key={date ?? ''} stops={stops} selectedId={selectedId} geoState={geoState} onPick={pick} reduceMotion={reduce} />

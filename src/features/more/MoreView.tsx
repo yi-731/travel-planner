@@ -1,28 +1,29 @@
 /**
- * 「更多」分頁：目前行程卡＋分組清單（行程、資料、AI 助理、App）＋刪除行程。
+ * 「更多」分頁：目前行程卡（點一下開行程設定）＋分組清單（封面、資料、App）＋刪除行程。
+ * 切換／新增行程在頂部的行程選單；景點推薦、天氣、排程檢查在各自的分頁，這裡不重複放。
  * 沒有任何行程時也會顯示（AppShell 不擋這一頁）：只留建立／匯入／還原與 App 設定。
  *
  * 動作實作在 ./actions.ts；純邏輯（格式、驗證、備份）在 ./model.ts、./backup.ts（有測試）。
  */
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { useEffect, useRef, useState } from 'react';
-import { tripPhase } from '@/domain/dates';
 import type { Trip } from '@/domain/types';
 import { haptic, isNative, isStandalonePWA, platform } from '@/platform';
 import { aiReady } from '@/services/ai';
 import { useActiveTrip, useData } from '@/store/data';
 import { useUI } from '@/store/ui';
-import { Button, Icon, LinkButton, ListGroup, ListRow, Orb, PageHead, Pill, Spinner, useBlobUrl } from '@/ui';
+import { Button, Icon, ListGroup, ListRow, Orb, PageHead, Pill, Spinner, useBlobUrl } from '@/ui';
 import {
   applyRestore,
-  chooseCover,
   deleteTripWithPhotos,
   errorText,
   exportBackup,
   exportExcel,
-  exportMyMaps,
-  pickBackup,
+  pickBackupFile,
+  pickCoverImage,
+  readBackupFile,
   removeCover,
+  setCover,
   type ExportResult,
 } from './actions';
 import { restorePlan, type ParsedBackup } from './backup';
@@ -31,7 +32,6 @@ import { fmtSyncTime, platformLabel, tripDateSummary } from './model';
 import s from './more.module.css';
 
 const APP_VERSION = (import.meta.env.VITE_APP_VERSION as string | undefined) || '1.0.0';
-const MY_MAPS_URL = 'https://www.google.com/maps/d/';
 const CONFIRM_MS = 4000;
 const EASE = [0.2, 0.8, 0.2, 1] as const;
 const HAS_CJK = /[぀-ヿ㐀-鿿가-힯]/;
@@ -78,7 +78,7 @@ export default function MoreView() {
   return (
     <div className={s.more}>
       <motion.div {...enter(0)}>
-        <PageHead eyebrow={trip?.name ?? '旅途手帳'} title="更多" />
+        <PageHead title="更多" />
       </motion.div>
       {trip ? <TripSections trip={trip} /> : <NoTripSections />}
     </div>
@@ -92,24 +92,29 @@ export default function MoreView() {
 function TripSections({ trip }: { trip: Trip }) {
   const enter = useEnter();
   const openSheet = useUI((st) => st.openSheet);
-  const setTab = useUI((st) => st.setTab);
-  const selectDate = useUI((st) => st.selectDate);
   const toast = useUI((st) => st.toast);
   const busy = useUI((st) => st.busy);
-  const tripCount = useData((st) => Object.keys(st.trips).length);
-  const apiKey = useData((st) => st.settings.anthropicApiKey);
-  const ready = safeAiReady(apiKey ?? '');
   const run = useRunner();
-  const [mapsHelp, setMapsHelp] = useState(false);
 
   const hasCover = trip.cover.kind === 'image' && !!trip.cover.blobKey;
   const coverUrl = useBlobUrl(hasCover ? trip.cover.blobKey : null);
-  const focusDay = tripPhase(trip).focusDay;
   const spin = (key: string) => (busy[key] ? <Spinner /> : undefined);
 
   const sheetSub = trip.sheetUrl
     ? `Google 試算表 · ${trip.sheetSyncedAt ? `上次同步 ${fmtSyncTime(trip.sheetSyncedAt)}` : '尚未同步'}`
     : 'Excel、CSV 或 Google 試算表連結';
+
+  /** 選照片要在點按當下開（iOS 取消選照片時不一定會通知，不能先鎖住按鈕再等） */
+  const chooseCover = async () => {
+    if (useUI.getState().busy['more:cover']) return;
+    const blob = await pickCoverImage();
+    if (!blob) return;
+    void run('more:cover', async () => {
+      await setCover(trip.id, blob);
+      void haptic('success');
+      toast('已更換封面', 'good');
+    });
+  };
 
   return (
     <>
@@ -118,22 +123,13 @@ function TripSections({ trip }: { trip: Trip }) {
       </motion.div>
 
       <motion.div {...enter(2)}>
-        <ListGroup title="行程">
-          <ListRow icon="edit" title="行程設定" subtitle="名稱、城市、日期、幣別、預算、旅伴" onClick={() => openSheet({ name: 'tripSettings' })} />
+        <ListGroup>
           <ListRow
             icon="image"
-            iconColor="var(--t-shop)"
             title="封面照片"
             subtitle={hasCover ? '已設定 · 點一下換一張' : '用一張照片當首頁封面'}
             end={busy['more:cover'] ? <Spinner /> : coverUrl ? <span className={s.thumb} style={{ backgroundImage: `url(${coverUrl})` }} /> : undefined}
-            onClick={() =>
-              void run('more:cover', async () => {
-                if (await chooseCover(trip.id)) {
-                  void haptic('success');
-                  toast('已更換封面', 'good');
-                }
-              })
-            }
+            onClick={() => void chooseCover()}
           />
           {hasCover && (
             <ListRow
@@ -149,23 +145,14 @@ function TripSections({ trip }: { trip: Trip }) {
               }
             />
           )}
-          <ListRow icon="plus" iconColor="var(--accent)" title="新增另一個行程" onClick={() => openSheet({ name: 'newTrip' })} />
-          <ListRow
-            icon="exchange"
-            iconColor="var(--t-transport)"
-            title="切換行程"
-            subtitle={tripCount > 1 ? `共 ${tripCount} 個行程` : '目前只有這一個行程'}
-            onClick={() => openSheet({ name: 'tripPicker' })}
-          />
         </ListGroup>
       </motion.div>
 
       <motion.div {...enter(3)}>
         <ListGroup title="資料">
-          <ListRow icon="refresh" iconColor="var(--good)" title="試算表匯入與同步" subtitle={sheetSub} onClick={() => openSheet({ name: 'import' })} />
+          <ListRow icon="refresh" title="試算表匯入與同步" subtitle={sheetSub} onClick={() => openSheet({ name: 'import' })} />
           <ListRow
             icon="sheet"
-            iconColor="var(--t-stay)"
             title="匯出 Excel"
             subtitle="行程與記帳兩個工作表，可再匯入"
             chevron={false}
@@ -180,61 +167,15 @@ function TripSections({ trip }: { trip: Trip }) {
               })
             }
           />
-          <ListRow
-            icon="map"
-            iconColor="var(--t-sight)"
-            title="匯出到 Google 我的地圖"
-            subtitle="下載地點 CSV，匯入我的地圖"
-            chevron={false}
-            end={spin('more:mymaps')}
-            onClick={() =>
-              void run('more:mymaps', async () => {
-                const r = await exportMyMaps(trip);
-                if (r !== 'cancelled') {
-                  void haptic('success');
-                  toast('已匯出 CSV，照下方步驟匯入我的地圖', 'good');
-                  setMapsHelp(true);
-                }
-              })
-            }
-          />
-          <AnimatePresence initial={false}>{mapsHelp && <MyMapsHelp onDone={() => setMapsHelp(false)} />}</AnimatePresence>
           <BackupRows />
         </ListGroup>
       </motion.div>
 
       <motion.div {...enter(4)}>
-        <ListGroup
-          title={
-            <span className={s.titleRow}>
-              AI 助理
-              {!ready && <Pill style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>未設定金鑰</Pill>}
-            </span>
-          }
-        >
-          {!ready && (
-            <ListRow icon="key" iconColor="var(--accent)" title="設定 AI 金鑰" subtitle="貼上 API 金鑰就能使用下列功能" onClick={() => openSheet({ name: 'appSettings' })} />
-          )}
-          <ListRow icon="star" iconColor="var(--accent)" title="景點推薦" subtitle="依當天行程推薦附近好去處" onClick={() => openSheet({ name: 'recommend', date: focusDay ?? undefined })} />
-          <ListRow icon="sun" iconColor="var(--warn)" title="天氣與穿搭" subtitle="每日天氣預報與穿搭建議" onClick={() => openSheet({ name: 'weather' })} />
-          <ListRow
-            icon="clock"
-            iconColor="var(--t-transport)"
-            title="排程檢查"
-            subtitle="估算移動時間，找出太趕的行程"
-            onClick={() => {
-              selectDate(focusDay);
-              setTab('plan');
-            }}
-          />
-        </ListGroup>
-      </motion.div>
-
-      <motion.div {...enter(5)}>
         <AppGroup />
       </motion.div>
 
-      <motion.div {...enter(6)}>
+      <motion.div {...enter(5)}>
         <DangerZone trip={trip} />
       </motion.div>
     </>
@@ -287,29 +228,6 @@ function TripCard({ trip, coverUrl, onOpen }: { trip: Trip; coverUrl: string | n
   );
 }
 
-function MyMapsHelp({ onDone }: { onDone: () => void }) {
-  return (
-    <motion.div className={s.inlinePanel} initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.28, ease: EASE }}>
-      <div className={s.inlineIn}>
-        <b className={s.inlineTitle}>匯入 Google 我的地圖</b>
-        <ol className={s.miniSteps}>
-          <li>開啟 Google 我的地圖，按「建立新地圖」</li>
-          <li>在「未命名的圖層」按「匯入」，選剛剛的 CSV 檔</li>
-          <li>位置欄選「地址」，標題欄選「名稱」</li>
-        </ol>
-        <div className="row">
-          <LinkButton href={MY_MAPS_URL} variant="soft" size="sm" icon="arrowUpRight">
-            開啟我的地圖
-          </LinkButton>
-          <Button variant="plain" size="sm" onClick={onDone}>
-            知道了
-          </Button>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
 /** 備份全部資料／從備份還原（還原前先確認） */
 function BackupRows() {
   const busy = useUI((st) => st.busy);
@@ -320,12 +238,23 @@ function BackupRows() {
   const plan = pending ? restorePlan(trips, pending.trips) : null;
   const tripCount = Object.keys(trips).length;
 
+  /** 選檔要在點按當下開（iOS 取消選檔時不一定會通知，不能先鎖住按鈕再等） */
+  const chooseBackup = async () => {
+    if (useUI.getState().busy['more:restore']) return;
+    const file = await pickBackupFile();
+    if (!file) return;
+    void run('more:restore', async () => {
+      const parsed = await readBackupFile(file);
+      void haptic('light');
+      setPending(parsed);
+    });
+  };
+
   return (
     <>
       {tripCount > 0 && (
         <ListRow
           icon="download"
-          iconColor="var(--t-transport)"
           title="備份全部資料"
           subtitle="所有行程與設定（不含照片與金鑰）"
           chevron={false}
@@ -343,20 +272,11 @@ function BackupRows() {
       )}
       <ListRow
         icon="upload"
-        iconColor="var(--t-transport)"
         title="從備份還原"
         subtitle="選擇備份檔，相同行程會被取代"
         chevron={false}
         end={busy['more:restore'] ? <Spinner /> : undefined}
-        onClick={() =>
-          void run('more:restore', async () => {
-            const parsed = await pickBackup();
-            if (parsed) {
-              void haptic('light');
-              setPending(parsed);
-            }
-          })
-        }
+        onClick={() => void chooseBackup()}
       />
       <AnimatePresence initial={false}>
         {pending && plan && (
@@ -397,20 +317,37 @@ function BackupRows() {
   );
 }
 
-/** App 設定、安裝到主畫面、關於 */
+/** AI 助理（未設定金鑰時）、App 設定、安裝到主畫面、關於 */
 function AppGroup() {
   const openSheet = useUI((st) => st.openSheet);
+  const apiKey = useData((st) => st.settings.anthropicApiKey);
+  const ready = safeAiReady(apiKey ?? '');
   const [installOpen, setInstallOpen] = useState(false);
   const standalone = isStandalonePWA();
   const canInstall = platform === 'web' && !standalone;
+  const where = canInstall ? '網頁版 · 資料只存在這個瀏覽器' : `${platformLabel(isNative, standalone)} · 資料只存在這支手機`;
   return (
     <ListGroup title="App">
-      <ListRow icon="gear" title="App 設定" subtitle="外觀、AI 金鑰、預設幣別、提醒" onClick={() => openSheet({ name: 'appSettings' })} />
+      {!ready && (
+        <ListRow
+          icon="spark"
+          iconColor="var(--accent)"
+          title="AI 助理"
+          subtitle="排程檢查、景點推薦、穿搭建議會用到，貼上金鑰就能用"
+          end={<Pill style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>未設定</Pill>}
+          onClick={() => openSheet({ name: 'appSettings' })}
+        />
+      )}
+      <ListRow
+        icon="gear"
+        title="App 設定"
+        subtitle={ready ? '外觀、AI 金鑰、預設幣別、提醒' : '外觀、預設幣別、提醒'}
+        onClick={() => openSheet({ name: 'appSettings' })}
+      />
       {canInstall && (
         <>
           <ListRow
             icon="share"
-            iconColor="var(--info)"
             title="安裝到 iPhone 主畫面"
             subtitle="免費，像 App 一樣全螢幕、可離線"
             chevron={false}
@@ -426,7 +363,7 @@ function AppGroup() {
           </AnimatePresence>
         </>
       )}
-      <ListRow icon="info" iconColor="var(--muted)" title={`旅途手帳 v${APP_VERSION}`} subtitle={`${platformLabel(isNative, standalone)} · 資料只存在這支手機`} />
+      <ListRow icon="info" title={`旅途手帳 v${APP_VERSION}`} subtitle={where} />
     </ListGroup>
   );
 }
@@ -494,7 +431,7 @@ function NoTripSections() {
       </motion.div>
       <motion.div {...enter(2)}>
         <ListGroup title="資料">
-          <ListRow icon="refresh" iconColor="var(--good)" title="試算表匯入與同步" subtitle="Excel、CSV 或 Google 試算表連結" onClick={() => openSheet({ name: 'import' })} />
+          <ListRow icon="refresh" title="試算表匯入與同步" subtitle="Excel、CSV 或 Google 試算表連結" onClick={() => openSheet({ name: 'import' })} />
           <BackupRows />
         </ListGroup>
       </motion.div>

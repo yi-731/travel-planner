@@ -4,11 +4,11 @@
  */
 import type { Trip } from '@/domain/types';
 import { exportFile, pickFile, pickImage } from '@/platform';
-import { tripToMyMapsCsv, tripToXlsx } from '@/services/exporter';
+import { tripToXlsx } from '@/services/exporter';
 import { useData } from '@/store/data';
 import { blobStore } from '@/store/persist';
 import { backupJson, buildBackup, parseBackup, type ParsedBackup } from './backup';
-import { backupFileName, orphanBlobKeys, safeFileName } from './model';
+import { backupFileName, isBlobKey, orphanBlobKeys, safeFileName } from './model';
 
 export type ExportResult = Awaited<ReturnType<typeof exportFile>>;
 
@@ -30,10 +30,6 @@ export async function exportExcel(trip: Trip): Promise<ExportResult> {
   return exportFile({ name: `${safeFileName(trip.name)}.xlsx`, mime: XLSX_MIME, data: blob });
 }
 
-export function exportMyMaps(trip: Trip): Promise<ExportResult> {
-  return exportFile({ name: `${safeFileName(trip.name)}-我的地圖.csv`, mime: 'text/csv;charset=utf-8', data: tripToMyMapsCsv(trip) });
-}
-
 /** 備份全部行程與設定（不含 API 金鑰），回傳行程數 */
 export async function exportBackup(): Promise<{ result: ExportResult; count: number }> {
   const { trips, settings } = useData.getState();
@@ -42,10 +38,11 @@ export async function exportBackup(): Promise<{ result: ExportResult; count: num
   return { result, count: backup.trips.length };
 }
 
-/** 選備份檔並讀取；取消回傳 null，檔案有問題丟出中文錯誤 */
-export async function pickBackup(): Promise<ParsedBackup | null> {
-  const file = await pickFile('.json,application/json');
-  if (!file) return null;
+/** 選備份檔；取消回傳 null。選檔要在點按當下呼叫（iOS 規定），不要放在 busy 狀態裡等 */
+export const pickBackupFile = () => pickFile('.json,application/json');
+
+/** 讀取選好的備份檔；檔案有問題丟出中文錯誤 */
+export async function readBackupFile(file: File): Promise<ParsedBackup> {
   if (file.size > 50 * 1024 * 1024) throw new Error('檔案太大（超過 50 MB），不像是旅途手帳的備份檔。');
   const text = await file.text();
   return parseBackup(text);
@@ -60,17 +57,17 @@ export function applyRestore(trips: Trip[]): number {
   return trips.length;
 }
 
-/** 選一張照片當封面；取消回傳 false */
-export async function chooseCover(tripId: string): Promise<boolean> {
-  const blob = await pickImage({ maxSide: 1600 });
-  if (!blob) return false;
+/** 選封面照片；取消回傳 null。要在點按當下呼叫（iOS 規定），不要放在 busy 狀態裡等 */
+export const pickCoverImage = () => pickImage({ maxSide: 1600 });
+
+/** 用選好的照片當封面，並清掉舊的封面照片 */
+export async function setCover(tripId: string, blob: Blob): Promise<void> {
   const key = await blobStore.put(blob);
   const old = useData.getState().trips[tripId]?.cover;
   useData.getState().mutateTrip(tripId, (d) => {
     d.cover = { kind: 'image', blobKey: key, hue: d.cover.hue };
   });
-  if (old?.kind === 'image' && old.blobKey && old.blobKey !== key) void blobStore.remove(old.blobKey).catch(() => undefined);
-  return true;
+  if (old?.kind === 'image' && isBlobKey(old.blobKey) && old.blobKey !== key) void blobStore.remove(old.blobKey).catch(() => undefined);
 }
 
 export async function removeCover(tripId: string): Promise<void> {
@@ -78,7 +75,7 @@ export async function removeCover(tripId: string): Promise<void> {
   useData.getState().mutateTrip(tripId, (d) => {
     d.cover = { kind: 'orb', hue: d.cover.hue ?? 0 };
   });
-  if (old?.kind === 'image' && old.blobKey) await blobStore.remove(old.blobKey).catch(() => undefined);
+  if (old?.kind === 'image' && isBlobKey(old.blobKey)) await blobStore.remove(old.blobKey).catch(() => undefined);
 }
 
 /** 刪除行程，並清掉只有這趟行程用到的照片 */

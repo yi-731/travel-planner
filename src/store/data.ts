@@ -2,10 +2,12 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { DEFAULT_AI_MODEL } from '@/domain/constants';
 import { uid } from '@/domain/ids';
+import { carryRates, sanitizeRates } from '@/domain/money';
 import type { Expense, Item, Settings, Trip } from '@/domain/types';
-import { idbStorage } from './persist';
+import { backupUnreadable, idbStorage, requestPersistentStorage, setWriteGate } from './persist';
 import { migrate, SCHEMA_VERSION } from './migrations';
 import { buildSampleTrip } from './sample';
+import { healTrips } from '@/features/more/backup';
 
 /**
  * 持久化資料（存在手機的 IndexedDB）：所有行程、目前行程、設定。
@@ -13,6 +15,11 @@ import { buildSampleTrip } from './sample';
  */
 export interface DataState {
   hydrated: boolean;
+  /**
+   * 啟動時讀不到手機裡的資料（iOS 偶爾斷線、資料壞掉、版本轉換出錯）。
+   * 資料沒有被刪除：這時不會寫入任何東西，畫面要請使用者重新讀取（retryLoad）。null = 正常。
+   */
+  loadError: string | null;
   trips: Record<string, Trip>;
   activeTripId: string | null;
   settings: Settings;
@@ -31,8 +38,16 @@ export interface DataState {
   upsertExpense: (tripId: string, e: Partial<Expense> & Pick<Expense, 'amount'>) => string;
   deleteExpense: (tripId: string, expenseId: string) => void;
 
+  /** 寫入其他幣別的匯率（1 單位該幣別 = N 本國貨幣），例如查到 USD 的匯率後 */
+  setRates: (tripId: string, rates: Record<string, number>) => void;
+
   updateSettings: (patch: Partial<Settings>) => void;
+  /** 讀取失敗後重新讀取；成功前不會寫入，手機裡的舊資料不會被蓋掉 */
+  retryLoad: () => Promise<void>;
 }
+
+/** IndexedDB 裡的 key */
+export const STORAGE_KEY = 'travel-planner';
 
 export const defaultSettings: Settings = {
   theme: 'system',
@@ -81,11 +96,14 @@ export const useData = create<DataState>()(
         if (!cur) return;
         const draft = structuredClone(cur);
         fn(draft);
+        // 改了當地／本國貨幣：已記的花費維持原本的換算結果
+        carryRates(cur, draft);
         draft.updatedAt = Date.now();
         set({ trips: { ...get().trips, [id]: draft } });
       };
       return {
         hydrated: false,
+        loadError: null,
         trips: {},
         activeTripId: null,
         settings: defaultSettings,
@@ -140,24 +158,47 @@ export const useData = create<DataState>()(
         },
         deleteExpense: (tripId, expenseId) => mutate(tripId, (t) => void (t.expenses = t.expenses.filter((e) => e.id !== expenseId))),
 
+        setRates: (tripId, rates) =>
+          mutate(tripId, (t) => {
+            const next = { ...sanitizeRates(t.rates), ...sanitizeRates(rates) };
+            // 本國貨幣固定是 1、當地貨幣用 trip.rate
+            delete next[t.homeCurrency];
+            delete next[t.localCurrency];
+            if (Object.keys(next).length) t.rates = next;
+            else delete t.rates;
+          }),
+
         updateSettings: (patch) => set({ settings: { ...get().settings, ...patch } }),
+        retryLoad: async () => {
+          // 畫面維持在錯誤頁，直到讀取成功（成功時才清掉 loadError）
+          setWriteGate('pending');
+          await useData.persist.rehydrate();
+        },
       };
     },
     {
-      name: 'travel-planner',
+      name: STORAGE_KEY,
       version: SCHEMA_VERSION,
       storage: createJSONStorage(() => idbStorage),
       migrate,
       partialize: (s) => ({ trips: s.trips, activeTripId: s.activeTripId, settings: s.settings }),
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<DataState>;
-        return { ...current, ...p, settings: { ...defaultSettings, ...(p.settings ?? {}) } };
+        return { ...current, ...p, trips: healTrips(p.trips ?? current.trips), settings: { ...defaultSettings, ...(p.settings ?? {}) } };
       },
       onRehydrateStorage: () => (state, error) => {
         if (error || !state) {
-          useData.setState({ hydrated: true });
+          // 讀不到或讀到壞資料：絕對不能寫入，否則空白的初始狀態會蓋掉手機裡所有的行程與金鑰
+          setWriteGate('pending');
+          console.error('[travel-planner] 讀取資料失敗', error);
+          void backupUnreadable(STORAGE_KEY);
+          useData.setState({ hydrated: true, loadError: describeError(error) });
+          setWriteGate('blocked');
           return;
         }
+        // 讀取成功才開放寫入（下面這些 setState 會把讀到的資料連同變更一起存回去）
+        setWriteGate('open');
+        void requestPersistentStorage();
         // 第一次開啟：建立範例行程
         if (!Object.keys(state.trips).length && !localStorageFlag('seeded')) {
           const t = buildSampleTrip();
@@ -166,11 +207,16 @@ export const useData = create<DataState>()(
         }
         const st = useData.getState();
         if (!st.activeTripId || !st.trips[st.activeTripId]) useData.setState({ activeTripId: Object.keys(st.trips)[0] ?? null });
-        useData.setState({ hydrated: true });
+        useData.setState({ hydrated: true, loadError: null });
       },
     },
   ),
 );
+
+function describeError(e: unknown): string {
+  if (e instanceof Error) return e.name && e.name !== 'Error' ? `${e.name}: ${e.message}` : e.message || '未知錯誤';
+  return e == null ? '未知錯誤' : String(e);
+}
 
 function localStorageFlag(key: string, value?: boolean): boolean {
   try {

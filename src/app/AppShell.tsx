@@ -1,12 +1,13 @@
 import { AnimatePresence, motion } from 'motion/react';
 import { lazy, Suspense, useEffect } from 'react';
 import { useActiveTrip } from '@/store/data';
-import { useUI, type Tab } from '@/store/ui';
+import { takeSheetOpener, useUI, type Tab } from '@/store/ui';
 import { Spinner } from '@/ui';
 import { SheetHost } from './SheetHost';
 import { TabBar } from './TabBar';
 import { Toasts } from './Toasts';
 import { TopBar } from './TopBar';
+import { useKeyboardInset } from './useKeyboardInset';
 import { NoTrip } from './NoTrip';
 import s from './shell.module.css';
 
@@ -34,6 +35,22 @@ export function AppShell() {
     window.scrollTo({ top: 0 });
   }, [tab]);
 
+  useKeyboardInset();
+
+  useEffect(() => {
+    if (sheetOpen) {
+      // 彈出頁開著時鎖住背後頁面的捲動（iOS 在背景或已捲到底的內容上拖曳，會捲動後面的清單）
+      const el = document.documentElement;
+      const prev = el.style.overflow;
+      el.style.overflow = 'hidden';
+      return () => {
+        el.style.overflow = prev;
+      };
+    }
+    // 全部關閉：inert 已在這次更新拿掉，把焦點還給當初開啟彈出頁的按鈕
+    const opener = takeSheetOpener();
+    if (opener?.isConnected) opener.focus({ preventScroll: true });
+  }, [sheetOpen]);
 
   return (
     <div className={s.app}>

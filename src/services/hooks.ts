@@ -11,7 +11,7 @@ import { tripDays } from '@/domain/dates';
 import type { DailyWeather, ISODate, Item, Trip } from '@/domain/types';
 import { useData } from '@/store';
 import { fetchRate } from './fx';
-import { canGeocode, geocodeMissing, parseMapsLink } from './geocode';
+import { canGeocode, geocodeMissing, parseMapsLink, searchCenter } from './geocode';
 import { fetchTripWeather, geocodeCity, samePlace, weatherStale } from './weather';
 
 /** 自動重抓（非使用者按下重新整理）的最短間隔 */
@@ -72,7 +72,7 @@ function loadWeather(tripId: string, force: boolean): Promise<void> {
   if (needsGeo && !trip.city.trim()) return Promise.resolve();
   if (!force && !needsGeo && (!tripDays(trip).length || !weatherStale(trip.weather, trip))) return Promise.resolve();
 
-  const key = weatherKey(trip);
+  let key = weatherKey(trip);
   const last = weatherAttempt.get(tripId);
   if (!force && last && last.key === key && Date.now() - last.at < AUTO_RETRY_MS) return Promise.resolve();
   weatherAttempt.set(tripId, { key, at: Date.now() });
@@ -95,6 +95,11 @@ function loadWeather(tripId: string, force: boolean): Promise<void> {
           if (!d.cityGeo && d.city === city) d.cityGeo = { ...geo };
         });
         t = useData.getState().trips[tripId];
+        // 剛寫入城市座標：之後用這個狀態比對有沒有被改過（自己寫入的座標不算變更）
+        if (t) {
+          key = weatherKey(t);
+          weatherAttempt.set(tripId, { key, at: Date.now() });
+        }
       }
       if (!t?.cityGeo || !tripDays(t).length) return;
       if (!force && !weatherStale(t.weather, t)) return;
@@ -106,7 +111,16 @@ function loadWeather(tripId: string, force: boolean): Promise<void> {
       error = message(e, '天氣資料暫時無法取得，請稍後再試一次。');
     } finally {
       weatherInflight.delete(tripId);
-      setStatus(false, error);
+      // 抓取期間日期或城市改了：這次抓的是舊的範圍，馬上照新的再抓一次
+      // （新的 key 會記在 weatherAttempt，冷卻時間照算，不會一直重抓）
+      const cur = useData.getState().trips[tripId];
+      if (cur && weatherKey(cur) !== key) {
+        void loadWeather(tripId, false);
+        // 不需要再抓（例如快取已經涵蓋）時，loadWeather 不會更新狀態：這裡結束載入中
+        if (!weatherInflight.has(tripId)) setStatus(false, error);
+      } else {
+        setStatus(false, error);
+      }
     }
   })();
   weatherInflight.set(tripId, p);
@@ -185,6 +199,7 @@ function startGeocode(tripId: string) {
   const found = new Set<string>();
   const snapshot = new Map(todo.map((it) => [it.id, it]));
 
+  // 只查待定位的行程點，但搜尋中心要用整趟行程算（已定位的行程點也算在內）
   geocodeMissing(
     { ...trip, items: todo },
     (itemId, geo) => {
@@ -199,6 +214,7 @@ function startGeocode(tripId: string) {
       });
     },
     ctrl.signal,
+    { near: searchCenter(trip) },
   )
     .then(() => {
       if (ctrl.signal.aborted) return;

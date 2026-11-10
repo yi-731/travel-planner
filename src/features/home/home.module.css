@@ -2,17 +2,17 @@
 .home { display: grid; gap: 16px; min-width: 0; }
 
 /* ---------- 標題：倒數＋城市大字 ---------- */
-.head { display: grid; gap: 2px; min-width: 0; padding-top: 6px; container-type: inline-size; }
+.head { display: grid; gap: 2px; min-width: 0; padding-top: 0; container-type: inline-size; }
 .eyebrowRow { display: flex; align-items: center; gap: 8px; min-height: 22px; min-width: 0; }
 .eyebrowRow > :first-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.badge { flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; line-height: 1; color: var(--accent); background: var(--accent-soft); padding: 4px 8px; border-radius: var(--r-pill); }
+.badge { flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; line-height: 1; color: var(--accent-text); background: var(--accent-soft); padding: 4px 8px; border-radius: var(--r-pill); }
 .route { flex: none; margin-left: auto; font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.1em; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* 字數越多越小：--len 由 HomeView 依城市名長度設定 */
 .city { font-size: min(var(--fs-hero), calc(100cqi / (var(--len, 6) * 0.6))); line-height: 0.92; text-transform: uppercase; letter-spacing: -0.015em; margin: 2px 0 0 -0.03em; overflow-wrap: anywhere; color: var(--ink); }
 .cityCjk { font-family: var(--f-ui); font-weight: 800; font-size: min(52px, calc(100cqi / var(--len, 4))); line-height: 1.12; letter-spacing: -0.02em; margin-top: 4px; overflow-wrap: anywhere; }
 
 /* ---------- 主卡 ---------- */
-.hero { position: relative; isolation: isolate; overflow: hidden; border-radius: var(--r-lg); background: var(--surface-2); box-shadow: var(--shadow-1); min-height: 320px; display: flex; flex-direction: column; justify-content: flex-end; padding: 10px; }
+.hero { position: relative; isolation: isolate; overflow: hidden; border-radius: var(--r-lg); background: var(--surface-2); box-shadow: var(--shadow-1); min-height: 296px; display: flex; flex-direction: column; justify-content: flex-end; padding: 10px; }
 .cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: -1; }
 .glass { position: relative; border-radius: calc(var(--r-lg) - 8px); background: var(--glass); border: 1px solid var(--glass-line); -webkit-backdrop-filter: blur(26px) saturate(1.4); backdrop-filter: blur(26px) saturate(1.4); overflow: hidden; }
 /* 照片封面明暗不一，玻璃面板加厚，文字才讀得清楚 */
@@ -69,6 +69,15 @@
 .isDone .rowTime { color: var(--faint); }
 .isDone .dot { opacity: 0.35; }
 .isDone .chev { color: var(--good); }
-.isNext .rowTime { color: var(--accent); font-weight: 700; }
+/* 旅途中時間已過但還沒打勾：變淡、不劃線（和「已完成」區分） */
+.isPast .rowTitle { color: var(--muted); font-weight: 500; }
+.isPast .rowTime { color: var(--faint); }
+.isPast .dot { opacity: 0.5; }
+.isNext .rowTime { color: var(--accent-text); font-weight: 700; }
 .isNext .dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 22%, transparent); }
 .moreRow .rowTitle { color: var(--muted); font-weight: 600; font-size: var(--fs-sm); }
+
+/* ---------- 旅程結束後的「回顧全部行程」 ---------- */
+.reviewRow { grid-template-columns: 24px minmax(0, 1fr) auto 16px; }
+.reviewIcon { display: grid; place-items: center; color: var(--accent-text); }
+.reviewCount { font-size: var(--fs-sm); font-weight: 600; color: var(--muted); }

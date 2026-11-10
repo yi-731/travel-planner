@@ -32,9 +32,30 @@ import s from './money.module.css';
 const OTHER = '__other';
 const DELETE_WINDOW_MS = 4000;
 
-export default function ExpenseFormSheet({ expenseId, prefill, fromAI }: { expenseId?: string; prefill?: Partial<Expense>; fromAI?: boolean }) {
-  const trip = useActiveTrip();
+export default function ExpenseFormSheet({
+  expenseId,
+  prefill,
+  fromAI,
+  tripId,
+}: {
+  expenseId?: string;
+  prefill?: Partial<Expense>;
+  fromAI?: boolean;
+  /** 記在哪趟旅程（例如拍收據時的那一趟）；沒給就用目前旅程 */
+  tripId?: string;
+}) {
+  const active = useActiveTrip();
+  const pinned = useData((st) => (tripId ? st.trips[tripId] : undefined));
+  const trip = tripId ? pinned : active;
   const [original] = useState<Expense | null>(() => (expenseId && trip ? (trip.expenses.find((e) => e.id === expenseId) ?? null) : null));
+  if (!trip && tripId)
+    return (
+      <Sheet title="找不到這趟旅程">
+        <Empty icon="info" title="可能已經被刪除">
+          回到記帳頁看看，或重新記一筆。
+        </Empty>
+      </Sheet>
+    );
   if (!trip)
     return (
       <Sheet title="記一筆">
@@ -102,6 +123,24 @@ function ExpenseForm({ trip, original, prefill, fromAI: aiPrefill }: { trip: Tri
   // 這次開表單才新增的照片（含「拍收據」帶進來的）；沒存檔就要清掉
   const fresh = useRef<Set<string>>(new Set(!original && prefill?.receiptBlobKey ? [prefill.receiptBlobKey] : []));
   const fromAI = !original && aiPrefill;
+
+  // 保險：表單沒經過「關閉／儲存」就被拿掉（例如點通知時整疊彈出頁被關掉），這次新增的照片也要清掉。
+  // 儲存、關閉時 dropFresh 已經清空 fresh，這裡就不會動到。等一下再清：開發模式的 StrictMode 會先卸載再馬上掛回來；
+  // 還留在彈出頁堆疊裡（之後會再打開）的收據照片也要留著。
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    const keys = fresh.current;
+    return () => {
+      mounted.current = false;
+      setTimeout(() => {
+        if (mounted.current || !keys.size) return;
+        const live = new Set(useUI.getState().sheets.flatMap((r) => (r.name === 'expenseForm' && r.prefill?.receiptBlobKey ? [r.prefill.receiptBlobKey] : [])));
+        for (const k of keys) if (!live.has(k)) void blobStore.remove(k).catch(() => undefined);
+        keys.clear();
+      }, 0);
+    };
+  }, []);
 
   useEffect(() => {
     if (!armedDelete) return;

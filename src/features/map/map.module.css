@@ -17,9 +17,9 @@
   background: var(--surface-2);
 }
 .leaflet { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--surface-2); font-family: var(--f-ui); }
-/* OSM 圖磚的柔和配色：淺色降低彩度帶一點暖色；深色反轉後轉回原色相 */
-.tilesLight { filter: saturate(0.5) sepia(0.12) contrast(0.96) brightness(1.04); }
-.tilesDark { filter: invert(1) hue-rotate(180deg) saturate(0.45) brightness(0.82) contrast(0.9); }
+/* OSM 圖磚的柔和配色：淺色降低彩度帶一點暖色；深色（.mapDark 掛在外層，切換主題會即時更新）反轉後轉回原色相 */
+.mapCard :global(.leaflet-tile-pane) { filter: saturate(0.5) sepia(0.12) contrast(0.96) brightness(1.04); }
+.mapDark :global(.leaflet-tile-pane) { filter: invert(1) hue-rotate(180deg) saturate(0.45) brightness(0.82) contrast(0.9); }
 .mapCard :global(.leaflet-container) { font-family: var(--f-ui); -webkit-tap-highlight-color: transparent; }
 
 /* 圖磚來源標示：小字、玻璃底 */
@@ -52,7 +52,7 @@
   height: 100%;
   border-radius: 50%;
   background: var(--c, var(--t-other));
-  color: var(--accent-ink);
+  color: var(--pin-ink);
   font: 700 13px/1 var(--f-ui);
   font-variant-numeric: tabular-nums;
   box-shadow: 0 0 0 2px var(--accent-ink), 0 3px 9px color-mix(in srgb, var(--night) 45%, transparent);
@@ -166,7 +166,7 @@
   display: grid;
   place-items: center;
   background: var(--c, var(--t-other));
-  color: var(--accent-ink);
+  color: var(--pin-ink);
   font-size: 13px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -185,20 +185,44 @@
 .unit { font-size: var(--fs-md); font-weight: 700; color: var(--ink); }
 .km { margin-left: 8px; font-size: var(--fs-sm); font-weight: 600; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 
-/* ---------- 附近快捷 ---------- */
-.quick { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 14px 6px 12px; background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-1); }
-.q { display: grid; justify-items: center; gap: 7px; min-height: 44px; padding: 2px; text-decoration: none; border-radius: var(--r-md); transition: transform var(--dur-1) var(--ease-out); }
-.q:active { transform: scale(0.94); }
-.qIcon { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
-.qLabel { font-size: 12px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+/* ---------- 附近快捷：一排可橫向滑動的膠囊 ---------- */
+/* iPhone 寬度一排放得下四個（平均撐滿）；更窄的螢幕只在這一排裡橫向滑動，不會撐寬頁面。上下留空間給陰影 */
+.quick {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  margin: -4px 0;
+  padding: 4px 0;
+}
+.quick::-webkit-scrollbar { display: none; }
+.q {
+  flex: 1 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 44px;
+  padding: 0 10px 0 8px;
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: transform var(--dur-1) var(--ease-out), background var(--dur-1);
+}
+.q:active { transform: scale(0.95); background: var(--surface-2); }
+.qIcon { flex: none; display: grid; place-items: center; color: var(--accent); }
 
 /* ---------- 站點清單 ---------- */
 .section { display: grid; gap: 10px; min-width: 0; }
 .secHead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 4px; min-width: 0; }
 .secTitle { font-size: var(--fs-xl); font-weight: 700; letter-spacing: -0.01em; }
-.legend { display: flex; align-items: center; gap: 10px; font-size: var(--fs-xs); font-weight: 600; color: var(--muted); white-space: nowrap; }
-.legend > span { display: inline-flex; align-items: center; gap: 5px; }
-.legend i { font-style: normal; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); font-size: 10px; font-weight: 800; }
 
 .list { list-style: none; margin: 0; padding: 0; background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-1); overflow: hidden; }
 .stop { position: relative; display: flex; align-items: center; padding-right: 6px; transition: background var(--dur-2) var(--ease-out); }
@@ -218,9 +242,9 @@
 .isDone .stopTitle { color: var(--muted); font-weight: 500; text-decoration: line-through; text-decoration-color: var(--faint); }
 .isDone .stopSub b { color: var(--muted); }
 
-.navs { flex: none; display: flex; }
-.nav { width: 44px; height: 44px; display: grid; place-items: center; text-decoration: none; }
-.nav span { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-3); color: var(--ink-2); font-size: 12px; font-weight: 800; transition: transform var(--dur-1) var(--ease-out), background var(--dur-1), color var(--dur-1); }
+/* 右側導航鈕：44px 觸控範圍、32px 圓底 */
+.nav { flex: none; width: 44px; height: 44px; display: grid; place-items: center; text-decoration: none; }
+.nav span { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-3); color: var(--accent); transition: transform var(--dur-1) var(--ease-out), background var(--dur-1), color var(--dur-1); }
 .nav:active span { transform: scale(0.9); background: var(--night); color: var(--night-ink); }
 
 .emptyCard { background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-1); padding: 0 8px 18px; }

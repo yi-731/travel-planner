@@ -14,6 +14,7 @@ import { gmapsNavigate } from '@/services/links';
 import { useUI } from '@/store/ui';
 import { Icon, LinkButton, Spinner } from '@/ui';
 import { meIcon, stopIcon } from './markers';
+import { runWhenIdle, type IdleTask } from './whenIdle';
 import { framing, locatedStops, navQuery, pointsKey, stopSubtitle, TILE_ATTRIBUTION, tileUrl, type Framing, type Stop } from './model';
 import s from './map.module.css';
 
@@ -68,6 +69,14 @@ export function TripMap({ stops, selectedId, onSelect, onOpen, city, dark, frame
   const [me, setMe] = useState<LatLng | null>(null);
   const [locating, setLocating] = useState(false);
   const tiles = useTileHealth();
+  /** 元件還在畫面上嗎：定位要等好幾秒，期間使用者可能已切到別的分頁（StrictMode 重掛也會設回 true） */
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   /** 使用者自己拖過／縮放過地圖：背景定位補上新座標時就不再自動框選 */
   const userMoved = useRef(false);
@@ -189,6 +198,8 @@ export function TripMap({ stops, selectedId, onSelect, onOpen, city, dark, frame
     if (locating) return;
     setLocating(true);
     const pos = await currentPosition();
+    // 等位置的時候已經離開地圖分頁：地圖已移除，什麼都不做
+    if (!alive.current) return;
     setLocating(false);
     if (!pos) {
       void haptic('error');
@@ -201,7 +212,8 @@ export function TripMap({ stops, selectedId, onSelect, onOpen, city, dark, frame
   };
 
   return (
-    <div className={`${s.mapCard} ${selected ? s.hasCallout : ''}`}>
+    // 深淺色濾鏡掛在外層（TileLayer 建立後不會更新 className，切換主題時才會跟著變）
+    <div className={`${s.mapCard} ${dark ? s.mapDark : ''} ${selected ? s.hasCallout : ''}`}>
       <MapContainer
         ref={setMap}
         className={s.leaflet}
@@ -213,7 +225,7 @@ export function TripMap({ stops, selectedId, onSelect, onOpen, city, dark, frame
         zoomControl={false}
         attributionControl={false}
       >
-        <TileLayer url={tileUrl(dark)} maxZoom={19} attribution={TILE_ATTRIBUTION} className={dark ? s.tilesDark : s.tilesLight} eventHandlers={tiles.handlers} />
+        <TileLayer url={tileUrl(dark)} maxZoom={19} attribution={TILE_ATTRIBUTION} eventHandlers={tiles.handlers} />
         <AttributionControl position="bottomright" prefix={false} />
         {line.length >= 2 && (
           <Polyline
@@ -296,32 +308,10 @@ export function TripMap({ stops, selectedId, onSelect, onOpen, city, dark, frame
   );
 }
 
-/**
- * Leaflet 在縮放動畫進行中會直接忽略新的 setView／fitBounds（Map._tryAnimatedZoom 檢查 _animatingZoom），
- * 例如剛換天又馬上補到新座標時，第二次框選就會不見。這裡改成等 zoomend 再做，而且只做最後一次要求。
- */
+/** 所有鏡頭移動都經過這裡：縮放動畫中就等結束再做；地圖已移除就不做（規則見 ./whenIdle.ts） */
 function useWhenIdle(map: LeafletMap | null) {
-  const pending = useRef<((m: LeafletMap) => void) | null>(null);
-  return useCallback(
-    (fn: (m: LeafletMap) => void) => {
-      if (!map) return;
-      const zooming = (map as unknown as { _animatingZoom?: boolean })._animatingZoom === true;
-      if (!zooming) {
-        pending.current = null;
-        fn(map);
-        return;
-      }
-      const waiting = pending.current !== null;
-      pending.current = fn;
-      if (!waiting)
-        map.once('zoomend', () => {
-          const next = pending.current;
-          pending.current = null;
-          next?.(map);
-        });
-    },
-    [map],
-  );
+  const pending = useRef<IdleTask | null>(null);
+  return useCallback((fn: IdleTask) => runWhenIdle(map, pending, fn), [map]);
 }
 
 /** 「全部」按鈕圖示：四個角框住中心點 */

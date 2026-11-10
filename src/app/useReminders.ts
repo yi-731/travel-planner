@@ -1,14 +1,15 @@
 /**
  * 出發提醒（原生 App 才有）：把目前行程「之後、有時間、還沒完成」的行程點排成 iPhone 本機通知。
  * - 提醒時間 = 抵達時間 − 設定的提前分鐘數；若算得出「最晚出發時間」（前一站到這站的交通），改用它往前推。
+ * - 行程時間是當地時間：用浮動時間排程（不綁時區），人在台灣先排好，到了國外也會照當地時鐘提醒。
  * - 行程點或設定改變後 1 秒重新排程；內容沒變就不重排（行程任何欄位變動都會產生新物件）。
  * - 網頁版不做任何事（Safari 不支援背景通知）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { fromMinutes, parseISODate, toMinutes } from '@/domain/dates';
+import { fromMinutes, toMinutes } from '@/domain/dates';
 import { daySegments } from '@/domain/schedule';
 import type { Trip } from '@/domain/types';
-import { isNative, onReminderTap, scheduleReminders, type Reminder } from '@/platform';
+import { isNative, onReminderTap, scheduleReminders, type Reminder, type WallClock } from '@/platform';
 import { useActiveTrip, useData } from '@/store/data';
 import { useUI } from '@/store/ui';
 
@@ -27,13 +28,20 @@ export function reminderId(tripId: string, itemId: string): number {
   return (h >>> 0) % 0x7fffffff || 1;
 }
 
-/** 'YYYY-MM-DD' 當天 0 點起算的分鐘數 → 當地時間（負值或超過 1440 會跨日） */
-function atMinutes(date: string, minutes: number): Date | null {
-  const d = parseISODate(date);
-  if (!d) return null;
-  d.setMinutes(minutes);
-  return d;
+/**
+ * 'YYYY-MM-DD' 當天 0 點起算的分鐘數 → 牆上時間（負值或超過 1440 會跨日）。
+ * 行程上的時間是「當地時間」，不綁時區：交給 iOS 用浮動時間排程，到哪個時區就照那裡的時鐘響。
+ */
+export function wallClockAt(date: string, minutes: number): WallClock | null {
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(date);
+  if (!m || !Number.isFinite(minutes)) return null;
+  // 用 UTC 計算只是為了跨日進位，不代表時區
+  const u = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 0, Math.round(minutes)));
+  return { year: u.getUTCFullYear(), month: u.getUTCMonth() + 1, day: u.getUTCDate(), hour: u.getUTCHours(), minute: u.getUTCMinutes() };
 }
+
+/** 牆上時間 → 以手機目前時區換算的時間點（只用來略過已過去的提醒、排序） */
+const wallToDate = (w: WallClock) => new Date(w.year, w.month - 1, w.day, w.hour, w.minute);
 
 /** 依行程產生提醒清單（純函式，依提醒時間排序） */
 export function buildReminders(trip: Trip, leadMin: number, now: number = Date.now()): Reminder[] {
@@ -50,14 +58,17 @@ export function buildReminders(trip: Trip, leadMin: number, now: number = Date.n
     const arrive = toMinutes(it.time) as number;
     const leaveBy = leaveByOf.get(it.id);
     const departAt = leaveBy != null && leaveBy >= 0 && leaveBy < arrive ? leaveBy : null;
-    const at = atMinutes(it.date as string, (departAt ?? arrive) - lead);
-    if (!at || at.getTime() <= now) continue;
+    const wall = wallClockAt(it.date as string, (departAt ?? arrive) - lead);
+    if (!wall) continue;
+    const at = wallToDate(wall);
+    if (at.getTime() <= now) continue;
     const time = fromMinutes(arrive);
     out.push({
       id: reminderId(trip.id, it.id),
       title: `出發提醒：${it.title.trim() || '下一站'}`,
       body: departAt != null ? `${time} 抵達 · 最晚 ${fromMinutes(departAt)} 出發 · 點開導航` : `${time} 抵達 · 點開導航`,
       at,
+      wall,
       extra: { tripId: trip.id, itemId: it.id },
     });
   }
@@ -119,7 +130,7 @@ export function useReminders(): void {
     [hydrated, enabled, trip, leadMin, tick],
   );
   const signature = useMemo(
-    () => reminders.map((r) => `${r.id}@${r.at.getTime()}|${r.title}|${r.body}`).join('\n'),
+    () => reminders.map((r) => `${r.id}@${r.wall ? Object.values(r.wall).join('-') : r.at.getTime()}|${r.title}|${r.body}`).join('\n'),
     [reminders],
   );
   const latest = useRef(reminders);

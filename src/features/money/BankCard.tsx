@@ -6,7 +6,7 @@ import { Icon, Orb } from '@/ui';
 import type { MoneySummary } from './model';
 import s from './money.module.css';
 
-/** 記帳總覽卡：夜色底＋右上日落光球、總花費大字、預算進度、今日／日均／剩餘 */
+/** 記帳總覽卡：夜色底＋右上日落光球、總花費大字、預算進度、今日／日均／剩餘（出發前改成距出發／每天可花／剩餘） */
 export function BankCard({ trip, sum }: { trip: Trip; sum: MoneySummary }) {
   const openSheet = useUI((st) => st.openSheet);
   const total = fmtMoney(sum.total);
@@ -55,14 +55,43 @@ export function BankCard({ trip, sum }: { trip: Trip; sum: MoneySummary }) {
       )}
 
       <dl className={s.stats}>
-        <div>
-          <dt>今日</dt>
-          <dd className="serif num">{fmtMoney(sum.today)}</dd>
-        </div>
-        <div>
-          <dt>日均</dt>
-          <dd className="serif num">{fmtMoney(sum.dailyAvg)}</dd>
-        </div>
+        {sum.phase === 'before' ? (
+          // 出發前：今日一定是 0、日均被預付的機票飯店撐大，改顯示距出發與每天可花
+          <>
+            <div>
+              <dt>距出發</dt>
+              <dd className="serif num">
+                {sum.daysUntil}
+                <small className={s.statUnit}>天</small>
+              </dd>
+            </div>
+            {sum.perDayLeft != null ? (
+              <div>
+                <dt>每天可花</dt>
+                <dd className="serif num">{fmtMoney(sum.perDayLeft)}</dd>
+              </div>
+            ) : (
+              <div>
+                <dt>行程</dt>
+                <dd className="serif num">
+                  {sum.tripDays}
+                  <small className={s.statUnit}>天</small>
+                </dd>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div>
+              <dt>今日</dt>
+              <dd className="serif num">{fmtMoney(sum.today)}</dd>
+            </div>
+            <div>
+              <dt>日均</dt>
+              <dd className="serif num">{fmtMoney(sum.dailyAvg)}</dd>
+            </div>
+          </>
+        )}
         <div>
           <dt>{sum.over ? '超支' : '剩餘'}</dt>
           <dd className={`serif num ${sum.over ? s.statBad : ''}`}>{sum.remaining != null ? fmtMoney(Math.abs(sum.remaining)) : '—'}</dd>

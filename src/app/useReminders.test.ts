@@ -7,7 +7,7 @@ vi.mock('@/store/data', () => ({ useData: () => null, useActiveTrip: () => null 
 vi.mock('@/store/ui', () => ({ useUI: { getState: () => ({ toast: () => {} }) } }));
 vi.mock('@/platform', () => ({ isNative: false, scheduleReminders: async () => false }));
 
-const { buildReminders, reminderId } = await import('./useReminders');
+const { buildReminders, reminderId, wallClockAt } = await import('./useReminders');
 
 const item = (p: Partial<Item> & Pick<Item, 'id' | 'title'>): Item => ({
   date: '2030-05-02',
@@ -86,5 +86,36 @@ describe('buildReminders', () => {
     expect(reminderId('trip1', 'early')).toBe(reminderId('trip1', 'early'));
     expect(reminderId('trip1', 'early')).not.toBe(reminderId('trip1', 'late'));
     for (const r of rs) expect(r.id).toBeGreaterThan(0), expect(r.id).toBeLessThanOrEqual(0x7fffffff);
+  });
+
+  it('用行程上的當地時間排程（浮動時間），不受手機目前時區影響', () => {
+    const t = { ...trip([item({ id: 'a', title: '伏見稻荷', time: '09:00' })]), cityGeo: { lat: 35, lng: 135.7, timezone: 'Asia/Tokyo' } };
+    const prevTZ = process.env.TZ;
+    try {
+      for (const tz of ['Asia/Taipei', 'Asia/Tokyo', 'America/New_York']) {
+        process.env.TZ = tz;
+        const [r] = buildReminders(t, 30, new Date(2030, 3, 1).getTime());
+        // 京都 09:00 抵達、提前 30 分 → 不論手機在哪個時區，都是「當地 08:30」響
+        expect(r.wall).toEqual({ year: 2030, month: 5, day: 2, hour: 8, minute: 30 });
+        // at 只用來比較是否已過、排序：用手機目前時區換算
+        expect(r.at.getTime()).toBe(new Date(2030, 4, 2, 8, 30).getTime());
+      }
+    } finally {
+      if (prevTZ === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTZ;
+    }
+  });
+
+  it('提前時間跨過午夜時，日期往前一天', () => {
+    const [r] = buildReminders(trip([item({ id: 'a', title: '早班車', date: '2030-05-03', time: '00:10' })]), 30, NOW);
+    expect(r.wall).toEqual({ year: 2030, month: 5, day: 2, hour: 23, minute: 40 });
+  });
+});
+
+describe('wallClockAt', () => {
+  it('分鐘數超過一天或為負值時正確跨日、跨月', () => {
+    expect(wallClockAt('2030-05-31', 24 * 60 + 5)).toEqual({ year: 2030, month: 6, day: 1, hour: 0, minute: 5 });
+    expect(wallClockAt('2030-01-01', -15)).toEqual({ year: 2029, month: 12, day: 31, hour: 23, minute: 45 });
+    expect(wallClockAt('不是日期', 60)).toBeNull();
   });
 });

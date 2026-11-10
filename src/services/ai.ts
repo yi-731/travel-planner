@@ -23,7 +23,8 @@ import { abortError, isAbort } from './net';
 /* 1. 錯誤與設定                                                        */
 /* ------------------------------------------------------------------ */
 
-export type AIErrorCode = 'no_key' | 'auth' | 'rate_limited' | 'overloaded' | 'network' | 'refused' | 'bad_output' | 'unknown';
+export type AIErrorCode =
+  | 'no_key' | 'auth' | 'forbidden' | 'billing' | 'rate_limited' | 'overloaded' | 'network' | 'refused' | 'bad_output' | 'unknown';
 export class AIError extends Error {
   constructor(public code: AIErrorCode, message: string) {
     super(message);
@@ -34,6 +35,8 @@ export class AIError extends Error {
 export const AI_ERROR_MESSAGES: Record<AIErrorCode, string> = {
   no_key: '還沒有設定 AI 金鑰，請到 更多 → App 設定 貼上你的 Anthropic API 金鑰。',
   auth: 'API 金鑰無效，請到 更多 → App 設定 重新貼上。',
+  forbidden: 'Anthropic 不允許這把金鑰使用這個模型（可能是權限或所在地區限制），請到 Anthropic 後台確認，或到 更多 → App 設定 換一個模型。',
+  billing: 'Anthropic 帳戶餘額不足或付款有問題，請到 Anthropic 後台的帳單頁面確認付款方式或儲值後再試。',
   rate_limited: 'AI 使用量暫時達到上限，請等一分鐘再試一次。',
   overloaded: 'AI 服務目前很忙，請稍後再試一次。',
   network: '連不上 AI 服務，請確認網路連線後再試一次。',
@@ -53,29 +56,66 @@ function statusOf(e: unknown): number | undefined {
   return undefined;
 }
 
+const TIMEOUT_TEXT = 'AI 回應太久沒有完成，請確認網路後再試一次。';
+const SPEND_LIMIT_TEXT =
+  'Anthropic 帳戶本月的 API 用量已達方案上限，要到下個月 1 日才會恢復；如需提早使用，請到 Anthropic 後台申請提高用量等級。';
+const ON_HOLD_TEXT = '這個 Anthropic 帳戶目前被停用，請到 Anthropic 後台查看說明。';
+const BAD_REQUEST_TEXT = 'AI 服務無法處理這次請求。若一直發生，請到 Anthropic 後台確認帳戶還有餘額，或到 更多 → App 設定 換一個模型。';
+
 /**
  * 把 SDK／連線錯誤轉成 AIError；使用者取消則回傳 name === 'AbortError' 的錯誤（呼叫端可靜默略過）。
- * 先判斷子類別再判斷父類別（APIUserAbortError、APIConnectionError 都繼承 APIError）。
+ * 先判斷子類別再判斷父類別（APIUserAbortError、APIConnectionError 都繼承 APIError；
+ * EnforcedSpendLimitReachedError 繼承 RateLimitError、OrganizationOnHoldError 繼承 BadRequestError）。
+ * 重試沒用的（餘額、用量上限、權限）要講清楚，不要說「稍後再試」。
  */
 export function toAIError(e: unknown): Error {
   if (e instanceof AIError) return e;
   if (isAbortLike(e)) return abortError();
   const err = (code: AIErrorCode, message = AI_ERROR_MESSAGES[code]) => new AIError(code, message);
 
-  if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) return err('auth');
+  if (e instanceof Anthropic.AuthenticationError) return err('auth');
+  // 本月用量上限：SDK 不一定產生子類別，也看 error_code
+  if (e instanceof Anthropic.EnforcedSpendLimitReachedError || (e instanceof Anthropic.APIError && e.errorCode === 'enforced_spend_limit_reached')) {
+    return err('billing', SPEND_LIMIT_TEXT);
+  }
+  // 402（SDK 沒有專屬類別）或 billing_error：餘額或付款問題
+  if (e instanceof Anthropic.APIError && (e.status === 402 || e.type === 'billing_error')) return err('billing');
+  if (e instanceof Anthropic.PermissionDeniedError) return err('forbidden');
   if (e instanceof Anthropic.RateLimitError) return err('rate_limited');
   if (e instanceof Anthropic.InternalServerError) return err('overloaded'); // 含 OverloadedError（529）與其他 5xx
   if (e instanceof Anthropic.APIConnectionError) {
     // 含 APIConnectionTimeoutError
-    return e instanceof Anthropic.APIConnectionTimeoutError ? err('network', 'AI 回應太久沒有完成，請確認網路後再試一次。') : err('network');
+    return e instanceof Anthropic.APIConnectionTimeoutError ? err('network', TIMEOUT_TEXT) : err('network');
   }
   if (e instanceof Anthropic.NotFoundError) return err('unknown', '找不到這個 AI 模型，請到 更多 → App 設定 換一個模型再試。');
-  if (e instanceof Anthropic.BadRequestError)
-    return err('unknown', 'AI 拒絕了這次請求。若一直發生，請到 Anthropic 後台確認帳戶還有餘額，或到 更多 → App 設定 換一個模型。');
+  // 帳戶因信任與安全原因被停用（不是餘額問題）
+  if (e instanceof Anthropic.OrganizationOnHoldError) return err('forbidden', ON_HOLD_TEXT);
+  if (e instanceof Anthropic.BadRequestError) return err('unknown', BAD_REQUEST_TEXT);
+
+  // 串流途中的錯誤事件沒有狀態碼，只有錯誤類型
+  if (e instanceof Anthropic.APIError && e.status == null) {
+    switch (e.type) {
+      case 'overloaded_error':
+      case 'api_error':
+        return err('overloaded');
+      case 'rate_limit_error':
+        return err('rate_limited');
+      case 'authentication_error':
+        return err('auth');
+      case 'permission_error':
+        return err('forbidden');
+      case 'timeout_error':
+        return err('network', TIMEOUT_TEXT);
+      case 'invalid_request_error':
+        return err('unknown', BAD_REQUEST_TEXT);
+    }
+  }
 
   // 不是 SDK 類別（例如被包裝過）時，用狀態碼判斷
   const status = statusOf(e);
-  if (status === 401 || status === 403) return err('auth');
+  if (status === 401) return err('auth');
+  if (status === 402) return err('billing');
+  if (status === 403) return err('forbidden');
   if (status === 429) return err('rate_limited');
   if (status === 529 || (status != null && status >= 500)) return err('overloaded');
   if (e instanceof TypeError) return err('network'); // fetch 失敗
@@ -111,12 +151,18 @@ export const FALLBACK_BETA = 'server-side-fallback-2026-07-01' as const;
 /* ------------------------------------------------------------------ */
 
 /**
- * max_tokens 同時涵蓋思考與輸出（這幾個模型的思考無法關閉）。
- * 給足空間避免回覆被截斷；只會依實際用量計費。
+ * max_tokens 同時涵蓋思考與輸出（這幾個模型的思考無法關閉，長的一天光思考就可能用掉大半）。
+ * 平常只依實際用量計費；但被截斷的回覆已經用滿 max_tokens，整份照算，所以要給足空間。
+ * 請求一律用串流，max_tokens 大也不會碰到 HTTP 逾時。
  */
-const MAX_TOKENS = 8000;
-/** 單次請求逾時（毫秒）；SDK 會自動重試 2 次 */
+const MAX_TOKENS = 16_000;
+/**
+ * 到收到回應標頭為止的逾時（毫秒）。串流時伺服器幾秒內就回標頭，
+ * 所以 SDK 的自動重試（2 次）只涵蓋還沒開始生成的失敗（連線錯誤、429、5xx），不會重跑生成到一半的請求。
+ */
 const TIMEOUT_MS = 120_000;
+/** 整個請求（含生成）最多等多久；串流沒有閒置逾時，超過就中止，避免一直轉圈 */
+const DEADLINE_MS = 300_000;
 
 const SYSTEM_BASE =
   '你是「旅途手帳」App 裡的旅遊助理，熟悉各國城市的交通、景點、餐廳與營業習慣。' +
@@ -148,6 +194,10 @@ export interface AskSpec {
   schema: Record<string, unknown>;
   effort: Effort;
   maxTokens?: number;
+  /** AI 拒絕時給使用者看的話（依功能說明能怎麼做；預設請使用者換個說法） */
+  refusedMessage?: string;
+  /** 回覆太長被截斷時給使用者看的話 */
+  truncatedMessage?: string;
 }
 
 /**
@@ -181,10 +231,12 @@ export function finalText(content: ResponseLike['content']): string {
   return first?.text?.trim() ?? '';
 }
 
-/** 檢查停止原因 → 解析 JSON → zod 驗證；任何一步失敗都丟 AIError */
-export function readStructured<T>(res: ResponseLike, schema: z.ZodType<T>): T {
-  if (res.stop_reason === 'refusal') throw new AIError('refused', AI_ERROR_MESSAGES.refused);
-  if (res.stop_reason === 'max_tokens') throw new AIError('bad_output', 'AI 回覆太長被截斷了，請減少行程點或換個說法再試一次。');
+const TRUNCATED_TEXT = 'AI 回覆太長被截斷了，請再試一次。';
+
+/** 檢查停止原因 → 解析 JSON → zod 驗證；任何一步失敗都丟 AIError。messages 依功能換掉拒絕／截斷時的說明 */
+export function readStructured<T>(res: ResponseLike, schema: z.ZodType<T>, messages: { refused?: string; truncated?: string } = {}): T {
+  if (res.stop_reason === 'refusal') throw new AIError('refused', messages.refused || AI_ERROR_MESSAGES.refused);
+  if (res.stop_reason === 'max_tokens') throw new AIError('bad_output', messages.truncated || TRUNCATED_TEXT);
   const text = finalText(res.content);
   if (!text) throw new AIError('bad_output', AI_ERROR_MESSAGES.bad_output);
   let data: unknown;
@@ -198,22 +250,59 @@ export function readStructured<T>(res: ResponseLike, schema: z.ZodType<T>): T {
   return parsed.data;
 }
 
+/** 帳戶不能用備援 beta 的金鑰（記下來，之後直接送一般請求） */
+const noFallbackKeys = new Set<string>();
+
+/** 400 是因為帳戶沒有開放備援 beta（anthropic-beta 標頭或 fallbacks 參數不被接受） */
+function isFallbackUnavailable(e: unknown): boolean {
+  if (!(e instanceof Anthropic.BadRequestError)) return false;
+  if (e.errorCode === 'organization_not_enrolled_in_beta') return true;
+  const m = e.apiMessage ?? '';
+  return m.includes(FALLBACK_BETA) || /anthropic-beta|\bfallbacks\b/i.test(m);
+}
+
+/** 用串流送出、等完整回覆（標頭幾秒內就到，長時間生成不會被逾時切斷又重送） */
+async function sendRequest(client: Anthropic, apiKey: string, model: string, body: ReturnType<typeof buildRequest>, signal: AbortSignal): Promise<ResponseLike> {
+  if (supportsFallback(model) && !noFallbackKeys.has(apiKey)) {
+    try {
+      // 被安全機制拒絕時，由伺服器自動改用建議的備援模型重跑（同一次請求內完成）
+      return await client.beta.messages.stream({ ...body, betas: [FALLBACK_BETA], fallbacks: 'default' }, { signal }).finalMessage();
+    } catch (e) {
+      if (!isFallbackUnavailable(e)) throw e;
+      // 帳戶還沒開放這個 beta：改送一般請求（這種 400 在生成前就回來，不會重複計費）
+      noFallbackKeys.add(apiKey);
+    }
+  }
+  return client.messages.stream(body, { signal }).finalMessage();
+}
+
 async function askJSON<T>(spec: AskSpec, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
   const { apiKey, model } = readSettings();
   if (signal?.aborted) throw abortError();
   if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new AIError('network', '目前沒有網路連線，連上網路後再試一次。');
   const client = getClient(apiKey);
   const body = buildRequest(model, spec);
+  // 整體期限＋呼叫端的取消（不用 AbortSignal.any，舊版 iOS 沒有）
+  const ctrl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctrl.abort();
+  }, DEADLINE_MS);
+  const onAbort = () => ctrl.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
   let res: ResponseLike;
   try {
-    res = supportsFallback(model)
-      ? // 被安全機制拒絕時，由伺服器自動改用建議的備援模型重跑（同一次請求內完成）
-        await client.beta.messages.create({ ...body, betas: [FALLBACK_BETA], fallbacks: 'default' }, { signal })
-      : await client.messages.create(body, { signal });
+    res = await sendRequest(client, apiKey, model, body, ctrl.signal);
   } catch (e) {
+    if (signal?.aborted) throw abortError();
+    if (timedOut) throw new AIError('network', TIMEOUT_TEXT);
     throw toAIError(e);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
   }
-  return readStructured(res, schema);
+  return readStructured(res, schema, { refused: spec.refusedMessage, truncated: spec.truncatedMessage });
 }
 
 /* ------------------------------------------------------------------ */
@@ -329,6 +418,8 @@ export async function checkDay(trip: Trip, date: ISODate, signal?: AbortSignal):
       content: buildDayCheckPrompt(trip, date, items),
       schema: DAY_CHECK_SCHEMA,
       effort: 'medium',
+      refusedMessage: 'AI 這次無法檢查這天的行程，請稍後再試一次。',
+      truncatedMessage: 'AI 回覆太長被截斷了，請減少這天的行程點再試一次。',
     },
     DayCheckOut,
     signal,
@@ -461,6 +552,7 @@ export async function recommendPlaces(trip: Trip, date: ISODate, query: string, 
       content: buildRecommendPrompt(trip, date, query),
       schema: RECOMMEND_SCHEMA,
       effort: 'medium',
+      truncatedMessage: 'AI 回覆太長被截斷了，換個比較具體的需求再試一次。',
     },
     RecommendOut,
     signal,
@@ -533,6 +625,7 @@ export async function packingAdvice(trip: Trip, weather: WeatherCache, signal?: 
       content: buildPackingPrompt(trip, use),
       schema: PACKING_SCHEMA,
       effort: 'medium',
+      refusedMessage: 'AI 這次無法產生穿搭建議，請稍後再試一次。',
     },
     PackingOut,
     signal,
@@ -604,24 +697,50 @@ export function normalizeReceipt(raw: ReceiptOutput, trip: Pick<Trip, 'localCurr
   };
 }
 
-const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
-type ImageType = (typeof IMAGE_TYPES)[number];
-export const imageMediaType = (t: string): ImageType => ((IMAGE_TYPES as readonly string[]).includes(t) ? (t as ImageType) : 'image/jpeg');
+type ImageType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+
+/**
+ * 從檔頭判斷圖片格式（API 支援的四種；其他回傳 null）。
+ * 不能相信 blob.type：縮圖失敗時拿到的是原檔，可能是 HEIC，或沒有標格式。
+ */
+export async function sniffImageType(image: Blob): Promise<ImageType | null> {
+  const h = new Uint8Array(await image.slice(0, 12).arrayBuffer());
+  const text = (a: number, b: number) => String.fromCharCode(...h.subarray(a, b));
+  if (h[0] === 0xff && h[1] === 0xd8 && h[2] === 0xff) return 'image/jpeg';
+  if (h[0] === 0x89 && h[1] === 0x50 && h[2] === 0x4e && h[3] === 0x47) return 'image/png';
+  if (text(0, 4) === 'GIF8') return 'image/gif';
+  if (text(0, 4) === 'RIFF' && text(8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
+/** API 每張圖片的上限（base64 後） */
+const MAX_IMAGE_BASE64 = 5 * 1024 * 1024;
+const RECEIPT_FALLBACK = '收據已附上，可以先手動填寫。';
 
 /** 收據照片 → 金額、幣別、店名、分類 */
 export async function scanReceipt(trip: Trip, image: Blob, signal?: AbortSignal): Promise<ReceiptResult> {
   readSettings(); // 沒金鑰時先擋下，不必讀圖
+  // 先在本機擋下 API 一定會拒絕的照片（格式不對或太大），不浪費一次請求
+  const mediaType = await sniffImageType(image);
+  if (!mediaType) {
+    throw new AIError('bad_output', `這張照片的格式無法辨識（例如 HEIC），請改用相機拍照，或選 JPEG／PNG 照片再試一次。${RECEIPT_FALLBACK}`);
+  }
   const data = await blobToBase64(image);
   if (!data) throw new Error('讀不到這張照片，請重新選一張再試。');
+  if (data.length > MAX_IMAGE_BASE64) {
+    throw new AIError('bad_output', `這張照片太大，AI 無法辨識。請改用相機拍照，或選小一點的照片再試一次。${RECEIPT_FALLBACK}`);
+  }
   const raw = await askJSON(
     {
       system: SYSTEM_BASE + ' 你正在從收據照片擷取記帳資料，數字要和照片上一致。',
       content: [
-        { type: 'image', source: { type: 'base64', media_type: imageMediaType(image.type), data } },
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
         { type: 'text', text: buildReceiptPrompt(trip) },
       ],
       schema: RECEIPT_SCHEMA,
       effort: 'low',
+      refusedMessage: 'AI 無法辨識這張照片，請改拍清楚的收據，或直接在表單手動輸入。',
+      truncatedMessage: 'AI 回覆不完整，請再試一次，或直接在表單手動輸入。',
     },
     ReceiptOut,
     signal,

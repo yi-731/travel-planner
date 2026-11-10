@@ -1,10 +1,12 @@
 /**
  * 地圖下方的站點清單：編號與顏色和地圖標記一致。
- * 點一列 → 地圖移到那一站（沒有座標的開地點詳情）；右側 G / A 直接用 Google／Apple 地圖導航。
+ * 點一列 → 地圖移到那一站（沒有座標的開地點詳情）；右側導航鈕直接用 Google 地圖導航。
+ * 要用 Apple 地圖：點那一列 → 地圖上的小卡 → 地點詳情。
  */
 import { motion } from 'motion/react';
 import { haptic } from '@/platform';
-import { appleMapsNavigate, gmapsNavigate } from '@/services/links';
+import { gmapsNavigate } from '@/services/links';
+import { Icon } from '@/ui';
 import { navQuery, stopAddress, type Stop } from './model';
 import s from './map.module.css';
 
@@ -63,14 +65,11 @@ export function StopList({ stops, selectedId, geoState, onPick, reduceMotion }: 
                 )}
               </span>
             </button>
-            <span className={s.navs}>
-              <a className={s.nav} href={gmapsNavigate(q)} target="_blank" rel="noopener noreferrer" aria-label={`用 Google 地圖導航到「${it.title}」`} onClick={() => void haptic('light')}>
-                <span>G</span>
-              </a>
-              <a className={s.nav} href={appleMapsNavigate(q)} target="_blank" rel="noopener noreferrer" aria-label={`用 Apple 地圖導航到「${it.title}」`} onClick={() => void haptic('light')}>
-                <span>A</span>
-              </a>
-            </span>
+            <a className={s.nav} href={gmapsNavigate(q)} target="_blank" rel="noopener noreferrer" aria-label={`用 Google 地圖導航到「${it.title}」`} onClick={() => void haptic('light')}>
+              <span>
+                <Icon name="navigate" size={16} stroke={2.2} />
+              </span>
+            </a>
           </motion.li>
         );
       })}

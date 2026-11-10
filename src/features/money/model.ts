@@ -3,7 +3,7 @@
  * 換算一律用 domain/money.ts 的 toHome / expenseHome，這裡只做整理與彙總。
  */
 import { COMMON_CURRENCIES, EXPENSE_CATEGORIES, expenseCategory } from '@/domain/constants';
-import { fmtMD, toISODate, today, tripDays, tripPhase, weekday } from '@/domain/dates';
+import { fmtMD, toISODate, today, tripDays, tripPhase, weekday, type TripPhase } from '@/domain/dates';
 import { byCategory, dayTotalHome, expenseHome, totalHome } from '@/domain/money';
 import type { Expense, ExpenseCategory, ISODate, Trip } from '@/domain/types';
 
@@ -12,7 +12,7 @@ import type { Expense, ExpenseCategory, ISODate, Trip } from '@/domain/types';
 export interface MoneySummary {
   total: number;
   today: number;
-  /** 平均每天花費（旅途中＝已過天數；結束後＝全程天數；出發前＝有花費的天數） */
+  /** 平均每天花費（旅途中＝已過天數；出發前與結束後＝全程天數；沒有日期＝有花費的天數） */
   dailyAvg: number;
   budget: number | null;
   /** 預算剩餘；超支時為負數 */
@@ -20,6 +20,14 @@ export interface MoneySummary {
   /** 已用預算比例 0～∞（1 = 100%） */
   used: number | null;
   over: boolean;
+  /** 旅程階段：出發前的總覽卡改顯示「距出發／每天可花」，不顯示今日、日均 */
+  phase: TripPhase['phase'];
+  /** 出發前：還有幾天出發；其他階段 null */
+  daysUntil: number | null;
+  /** 行程天數（沒有日期為 0） */
+  tripDays: number;
+  /** 有預算時，剩餘預算平均到還沒過完的每一天（出發前＝全程天數；旅途中含今天；超支為 0）；沒預算或已結束為 null */
+  perDayLeft: number | null;
 }
 
 export function summarize(trip: Trip, now: ISODate = today()): MoneySummary {
@@ -27,10 +35,12 @@ export function summarize(trip: Trip, now: ISODate = today()): MoneySummary {
   const ph = tripPhase(trip, now);
   let days: number;
   if (ph.phase === 'during') days = ph.dayIndex + 1;
-  else if (ph.phase === 'after') days = ph.days.length;
-  else days = new Set(trip.expenses.map((e) => e.date)).size;
+  else if (ph.phase === 'none') days = new Set(trip.expenses.map((e) => e.date)).size;
+  // 出發前（預付的機票、飯店）與結束後：攤到全程每一天
+  else days = ph.days.length;
   const budget = trip.budget && trip.budget > 0 ? trip.budget : null;
   const remaining = budget != null ? budget - total : null;
+  const daysLeft = ph.phase === 'before' ? ph.days.length : ph.phase === 'during' ? ph.days.length - ph.dayIndex : 0;
   return {
     total,
     today: dayTotalHome(trip, now),
@@ -39,6 +49,10 @@ export function summarize(trip: Trip, now: ISODate = today()): MoneySummary {
     remaining,
     used: budget != null ? total / budget : null,
     over: remaining != null && remaining < -0.005,
+    phase: ph.phase,
+    daysUntil: ph.phase === 'before' ? ph.daysUntil : null,
+    tripDays: ph.days.length,
+    perDayLeft: remaining != null && daysLeft > 0 ? Math.max(0, remaining) / daysLeft : null,
   };
 }
 

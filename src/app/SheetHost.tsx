@@ -9,10 +9,11 @@ export function SheetHost() {
   const top = sheets[sheets.length - 1];
   let node = null;
   if (top) {
-    const { name, ...props } = top;
+    // key 每次開啟都不同：剛關閉、還在滑出動畫中的同名頁面不會被沿用（否則會看到上一次沒存的內容）
+    const { name, key, ...props } = top;
     const C = SHEETS[name] as unknown as ComponentType<Record<string, unknown>>;
     node = (
-      <Suspense key={`${sheets.length}-${name}`} fallback={null}>
+      <Suspense key={key ?? `${sheets.length}-${name}`} fallback={null}>
         <C {...props} />
       </Suspense>
     );

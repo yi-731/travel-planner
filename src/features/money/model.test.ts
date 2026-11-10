@@ -71,12 +71,35 @@ describe('summarize', () => {
     expect(s.remaining).toBe(-100);
   });
 
-  it('沒有預算時不算比例；出發前用有花費的天數算日均', () => {
+  it('沒有預算時不算比例；出發前預付的花費攤到全程天數，並算出距出發天數', () => {
     const t = trip({ expenses: [ex({ date: '2026-11-21', amount: 500 }), ex({ date: '2026-11-21', amount: 500 })] });
     const s = summarize(t, '2026-11-01');
     expect(s.budget).toBeNull();
     expect(s.used).toBeNull();
-    expect(s.dailyAvg).toBe(200);
+    expect(s.phase).toBe('before');
+    expect(s.daysUntil).toBe(20);
+    expect(s.tripDays).toBe(5);
+    // 一晚飯店不再被當成「一天」：200 TWD ÷ 5 天
+    expect(s.dailyAvg).toBe(40);
+    expect(s.perDayLeft).toBeNull();
+  });
+
+  it('perDayLeft：剩餘預算平均到還沒過完的每一天', () => {
+    // 預算 1000 TWD、已花 1000 JPY = 200 TWD，剩 800
+    const t = trip({ budget: 1000, expenses: [ex({ date: '2026-11-21', amount: 1000 })] });
+    expect(summarize(t, '2026-11-01').perDayLeft).toBe(160); // 出發前：800 ÷ 5 天
+    expect(summarize(t, '2026-11-23').perDayLeft).toBe(800 / 3); // 第 3 天：含今天還有 3 天
+    expect(summarize(t, '2026-11-23').daysUntil).toBeNull();
+    expect(summarize(t, '2026-11-30').perDayLeft).toBeNull(); // 已結束
+    expect(summarize(trip({ budget: 100, expenses: [ex({ amount: 1000 })] }), '2026-11-01').perDayLeft).toBe(0); // 超支
+  });
+
+  it('沒有日期的旅程：用有花費的天數算日均', () => {
+    const t = trip({ startDate: null, endDate: null, expenses: [ex({ date: '2026-11-21', amount: 500 }), ex({ date: '2026-11-22', amount: 500 })] });
+    const s = summarize(t, '2026-11-01');
+    expect(s.phase).toBe('none');
+    expect(s.tripDays).toBe(0);
+    expect(s.dailyAvg).toBe(100);
   });
 });
 

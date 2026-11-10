@@ -1,5 +1,5 @@
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import type { ReactNode } from 'react';
+import { AnimatePresence, motion, useIsPresent, useReducedMotion } from 'motion/react';
+import { type ReactNode, type RefObject, useRef } from 'react';
 import { fromMinutes, type TripPhase } from '@/domain/dates';
 import { itemType } from '@/domain/constants';
 import { fmtMoney, totalHome } from '@/domain/money';
@@ -26,17 +26,25 @@ interface Props {
 
 const EYEBROW: Record<NextStop['status'], string> = { first: '第一站', next: '下一站', now: '進行中' };
 
+/**
+ * 打勾後主卡會換成下一站（舊面板淡出 0.22 秒、新面板再淡入）。連點兩下時第二下會落在新面板同一個位置，
+ * 這段時間內的打勾一律忽略，避免順手把下一站也標成完成。
+ */
+const DONE_COOLDOWN_MS = 700;
+
 /** 首頁主卡：封面（照片或日落光球）＋底部霧面玻璃面板 */
 export function HeroCard({ trip, phase, next, dayCount, seg, nowMin }: Props) {
   const reduce = useReducedMotion();
   const cover = useBlobUrl(trip.cover.kind === 'image' ? trip.cover.blobKey : null);
   const hue = trip.cover.hue ?? 0;
+  // 上一次在主卡打勾的時間（換站時 StopPanel 會重新掛載，所以記在外層）
+  const lastDoneAt = useRef(0);
 
   let key: string;
   let body: ReactNode;
   if (next) {
     key = `stop-${next.item.id}`;
-    body = <StopPanel trip={trip} phase={phase} next={next} seg={seg} nowMin={nowMin} />;
+    body = <StopPanel trip={trip} phase={phase} next={next} seg={seg} nowMin={nowMin} lastDoneAt={lastDoneAt} />;
   } else if (phase.phase === 'after') {
     key = 'after';
     body = <RecapPanel trip={trip} phase={phase} />;
@@ -61,8 +69,8 @@ export function HeroCard({ trip, phase, next, dayCount, seg, nowMin }: Props) {
             key={key}
             className={s.glassIn}
             initial={reduce ? false : { opacity: 0, x: 14 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={reduce ? { opacity: 0 } : { opacity: 0, x: -14 }}
+            animate={{ opacity: 1, x: 0, pointerEvents: 'auto' }}
+            exit={reduce ? { opacity: 0, pointerEvents: 'none' } : { opacity: 0, x: -14, pointerEvents: 'none' }}
             transition={{ duration: reduce ? 0.01 : 0.22, ease: [0.2, 0.8, 0.2, 1] }}
           >
             {body}
@@ -73,7 +81,18 @@ export function HeroCard({ trip, phase, next, dayCount, seg, nowMin }: Props) {
   );
 }
 
-function StopPanel({ trip, phase, next, seg, nowMin }: { trip: Trip; phase: TripPhase; next: NextStop; seg: SegmentInfo | null; nowMin: number }) {
+interface StopPanelProps {
+  trip: Trip;
+  phase: TripPhase;
+  next: NextStop;
+  seg: SegmentInfo | null;
+  nowMin: number;
+  lastDoneAt: RefObject<number>;
+}
+
+function StopPanel({ trip, phase, next, seg, nowMin, lastDoneAt }: StopPanelProps) {
+  // 換站時舊面板還在淡出，這時不接受點按
+  const isPresent = useIsPresent();
   const openSheet = useUI((st) => st.openSheet);
   const toast = useUI((st) => st.toast);
   const toggleDone = useData((st) => st.toggleDone);
@@ -83,7 +102,14 @@ function StopPanel({ trip, phase, next, seg, nowMin }: { trip: Trip; phase: Trip
   const tone = leaveTone(seg, phase.phase, nowMin);
   const soon = phase.phase === 'during' && next.status === 'next' ? startsIn(item, nowMin) : null;
 
+  // 只會「標記完成」，不會切回未完成（要取消請到地點頁或行程分頁）
   const markDone = () => {
+    if (!isPresent) return;
+    const t = performance.now();
+    if (t - lastDoneAt.current < DONE_COOLDOWN_MS) return;
+    const cur = useData.getState().trips[trip.id]?.items.find((i) => i.id === item.id);
+    if (!cur || cur.done) return;
+    lastDoneAt.current = t;
     void haptic('success');
     toggleDone(trip.id, item.id);
     toast(`已完成「${item.title}」`, 'good');
@@ -118,7 +144,7 @@ function StopPanel({ trip, phase, next, seg, nowMin }: { trip: Trip; phase: Trip
           詳情
         </Button>
         {phase.phase === 'during' && (
-          <button type="button" className={s.doneBtn} aria-label={`把「${item.title}」標記為完成`} onClick={markDone}>
+          <button type="button" className={s.doneBtn} aria-label={`把「${item.title}」標記為完成`} disabled={!isPresent} onClick={markDone}>
             <Icon name="check" size={19} stroke={2.4} />
           </button>
         )}

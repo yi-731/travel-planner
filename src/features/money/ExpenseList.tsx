@@ -67,7 +67,7 @@ function ExpenseRow({ trip, e }: { trip: Trip; e: Expense }) {
         className={s.itemBtn}
         onClick={() => {
           void haptic('light');
-          openSheet({ name: 'expenseForm', expenseId: e.id });
+          openSheet({ name: 'expenseForm', expenseId: e.id, tripId: trip.id });
         }}
       >
         <span className={s.catTile} style={{ ['--c' as string]: cssVar(cat.color) }} aria-hidden>

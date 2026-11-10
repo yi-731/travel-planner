@@ -1,10 +1,10 @@
 /**
- * 行程時間軸：卡片（時間、名稱、類型、停留、費用、評分、完成勾勾）＋卡片之間的移動資訊。
+ * 行程時間軸：卡片（時間、名稱、類型、停留／需時、費用、評分、完成勾勾）＋卡片之間的移動資訊。
  * 點卡片開地點頁；點移動那一行開「移動」彈出頁。
  */
 import { AnimatePresence, motion } from 'motion/react';
 import { Fragment, useState } from 'react';
-import { cssVar, itemType } from '@/domain/constants';
+import { cssVar, durationWord, itemType } from '@/domain/constants';
 import type { SegmentInfo } from '@/domain/schedule';
 import type { Item } from '@/domain/types';
 import { haptic } from '@/platform';
@@ -22,13 +22,18 @@ export function Timeline({
   segs,
   currency,
   reduce,
+  stagger = !reduce,
 }: {
   tripId: string;
   items: Item[];
   segs: SegmentInfo[];
   currency: string;
+  /** 系統「減少動態效果」：關掉所有動畫 */
   reduce: boolean;
+  /** 卡片逐張浮現（只在掛上時有作用；換天滑入時關掉） */
+  stagger?: boolean;
 }) {
+  const rise = !reduce && stagger;
   return (
     <ol className={s.timeline} aria-label="當天行程">
       {items.map((it, i) => {
@@ -42,9 +47,9 @@ export function Timeline({
             )}
             <motion.li
               className={s.cardItem}
-              initial={reduce ? false : { opacity: 0, y: 10 }}
+              initial={rise ? { opacity: 0, y: 10 } : false}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.32, delay: reduce ? 0 : Math.min(i, 8) * 0.035, ease: EASE }}
+              transition={{ duration: 0.32, delay: rise ? Math.min(i, 8) * 0.035 : 0, ease: EASE }}
             >
               <ItemCard tripId={tripId} it={it} currency={currency} reduce={reduce} />
             </motion.li>
@@ -81,7 +86,11 @@ function ItemCard({ tripId, it, currency, reduce }: { tripId: string; it: Item; 
               <span>
                 <Chip color={type.color}>{type.label}</Chip>
               </span>
-              {it.durationMin ? <span className="num">停留 {it.durationMin} 分</span> : null}
+              {it.durationMin ? (
+                <span className="num">
+                  {durationWord(it.type)} {it.durationMin} 分
+                </span>
+              ) : null}
               {hasCost ? <span className="num">{it.cost === 0 ? '免費' : fmtLocal(it.cost as number, currency)}</span> : null}
               {hasRating ? (
                 <span className={`num ${s.rating}`}>
@@ -173,7 +182,7 @@ function Connector({ seg }: { seg: SegmentInfo }) {
       </span>
       <span className={s.connText} aria-hidden>
         <span className={s.parts}>
-          <span className="num">{line.text}</span>
+          <span className={`num ${line.hint ? s.connHint : ''}`}>{line.text}</span>
           {line.warn && <span className={s.connWarnText}>{line.warn}</span>}
           {line.leave && <span className="num">{line.leave}</span>}
         </span>

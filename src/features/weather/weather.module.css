@@ -77,7 +77,7 @@ button.row:active { background: var(--surface-2); }
 .dayName { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-md); font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
 .dayDate { font-size: 12px; color: var(--muted); font-weight: 500; white-space: nowrap; }
 .todayTag { font-size: 10px; font-weight: 700; line-height: 1; padding: 3px 6px; border-radius: var(--r-pill); background: var(--accent); color: var(--accent-ink); }
-.isToday .dayName { color: var(--accent); }
+.isToday .dayName { color: var(--accent-text); }
 .iconCol { display: grid; justify-items: center; gap: 2px; color: var(--ink-2); }
 .rain { font-size: 11px; font-weight: 700; color: var(--info); line-height: 1; white-space: nowrap; }
 .noIcon { color: var(--faint); }

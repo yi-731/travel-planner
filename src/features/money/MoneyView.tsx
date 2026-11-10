@@ -14,7 +14,7 @@ import { CategoryCard } from './CategoryCard';
 import { ExpenseList } from './ExpenseList';
 import { categorySlices, groupByDate, memberRows, rateLine, summarize } from './model';
 import { SettleCard } from './SettleCard';
-import { useReceiptScan } from './useReceiptScan';
+import { pendingLabel, useReceiptScan } from './useReceiptScan';
 import s from './money.module.css';
 
 export default function MoneyView() {
@@ -30,7 +30,7 @@ export default function MoneyView() {
 
 function Money({ trip }: { trip: Trip }) {
   const openSheet = useUI((st) => st.openSheet);
-  const { scan, busy } = useReceiptScan(trip.id);
+  const { scan, busy, pending, openPending } = useReceiptScan(trip.id);
 
   const sum = useMemo(() => summarize(trip), [trip]);
   const slices = useMemo(() => categorySlices(trip), [trip]);
@@ -58,21 +58,28 @@ function Money({ trip }: { trip: Trip }) {
       <BankCard trip={trip} sum={sum} />
 
       <div className={s.actions}>
-        <Button variant="go" icon="plus" block className={s.addBtn} onClick={() => openSheet({ name: 'expenseForm' })}>
+        <Button variant="go" icon="plus" block className={s.addBtn} onClick={() => openSheet({ name: 'expenseForm', tripId: trip.id })}>
           記一筆
         </Button>
-        <Button variant="ghost" icon={busy ? undefined : 'camera'} onClick={() => void scan()} disabled={busy} aria-busy={busy} className={s.scanBtn}>
-          {busy ? (
-            <>
-              <span className={s.scanSpin}>
-                <Spinner />
-              </span>
-              辨識中…
-            </>
-          ) : (
-            '拍收據'
-          )}
-        </Button>
+        {pending ? (
+          // 辨識完成時畫面正忙，結果先存著：點這裡打開
+          <Button variant="soft" icon={pending.fromAI ? 'spark' : 'receipt'} onClick={openPending} className={s.scanBtn}>
+            {pendingLabel(pending)}
+          </Button>
+        ) : (
+          <Button variant="ghost" icon={busy ? undefined : 'camera'} onClick={() => void scan()} disabled={busy} aria-busy={busy} className={s.scanBtn}>
+            {busy ? (
+              <>
+                <span className={s.scanSpin}>
+                  <Spinner />
+                </span>
+                辨識中…
+              </>
+            ) : (
+              '拍收據'
+            )}
+          </Button>
+        )}
       </div>
 
       {count === 0 ? (

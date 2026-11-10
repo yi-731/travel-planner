@@ -28,19 +28,29 @@ export function gmapsDayRoute(items: Pick<Item, 'address' | 'title'>[], mode: Tr
   }&travelmode=${mode}`;
 }
 
-/** Google 日曆「新增活動」連結 */
-export function googleCalendar(trip: Pick<Trip, 'name'>, it: Pick<Item, 'title' | 'date' | 'time' | 'durationMin' | 'address' | 'note'>): string | null {
+/**
+ * Google 日曆「新增活動」連結。
+ * 有時間的行程點帶上旅程城市的時區（ctz），否則 Google 會用使用者日曆的時區（通常是台北）解讀，
+ * 東京 12:30 會變成台北 12:30（東京 13:30）。整天的活動與時區無關；不知道時區時維持原本的寫法。
+ */
+export function googleCalendar(
+  trip: Pick<Trip, 'name'> & Partial<Pick<Trip, 'cityGeo'>>,
+  it: Pick<Item, 'title' | 'date' | 'time' | 'durationMin' | 'address' | 'note'>,
+): string | null {
   if (!it.date) return null;
   const d = it.date.replace(/-/g, '');
   const st = toMinutes(it.time);
   let dates: string;
+  let ctz = '';
   if (st == null) dates = `${d}/${addDays(it.date, 1).replace(/-/g, '')}`;
   else {
     const en = Math.min(st + (it.durationMin || 60), 23 * 60 + 59);
     dates = `${d}T${fromMinutes(st).replace(':', '')}00/${d}T${fromMinutes(en).replace(':', '')}00`;
+    const tz = trip.cityGeo?.timezone?.trim();
+    if (tz) ctz = `&ctz=${enc(tz)}`;
   }
   const details = [it.note, trip.name].filter(Boolean).join('\n');
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${enc(it.title)}&dates=${dates}&location=${enc(
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${enc(it.title)}&dates=${dates}${ctz}&location=${enc(
     it.address || it.title,
   )}&details=${enc(details)}`;
 }

@@ -156,6 +156,35 @@ describe('useTripWeather', () => {
     expect(calls.length).toBeGreaterThan(1);
   });
 
+  it('抓取期間改了日期：結束後照新的日期再抓一次', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const calls: URL[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const u = new URL(String(input));
+        calls.push(u);
+        if (calls.length === 1) await gate; // 第一次請求卡住，模擬還在抓
+        const body = weatherRoute(u);
+        if (body === undefined) throw new TypeError('Failed to fetch');
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    seedTrip('w6');
+    const r = renderWeather('w6');
+    await waitFor(() => calls.length === 1);
+    const NEW = addDays(START, 2);
+    act(() => useData.getState().mutateTrip('w6', (d) => {
+      d.startDate = NEW;
+      d.endDate = addDays(NEW, 4);
+    }));
+    await act(async () => release());
+    await waitFor(() => r.current?.loading === false && r.current.days.length === 5);
+    expect(calls.filter((u) => u.host === 'api.open-meteo.com').length).toBeGreaterThanOrEqual(2);
+    expect(r.current?.days.map((d) => d.date)).toEqual(rangeDays(NEW, addDays(NEW, 4)));
+  });
+
   it('城市換了：舊座標的天氣不顯示', async () => {
     mockFetch(weatherRoute);
     seedTrip('w5');
@@ -202,6 +231,24 @@ describe('useAutoGeocode', () => {
     renderGeo('g1');
     await act(async () => {});
     expect(calls.length).toBe(n);
+  }, 10_000);
+
+  it('沒有城市座標時，用已定位的行程點當搜尋中心，太遠的結果（其他大陸的同名地點）不採用', async () => {
+    // 「中央公園」查到美國亞特蘭大：離東京的行程點約 11,000 公里
+    const calls = mockFetch(() => ({ features: [{ geometry: { coordinates: [-84.39, 33.75] } }] }));
+    seedTrip('g3', {
+      city: '', cityGeo: undefined,
+      items: [
+        item('a', { geo: { lat: 35.68, lng: 139.76, source: 'link' } }),
+        item('b', { geo: { lat: 35.66, lng: 139.7, source: 'link' } }),
+        item('中央公園'),
+      ],
+    });
+    const { out } = renderGeo('g3');
+    await waitFor(() => out.current?.running === false && calls.length > 0, 8000);
+    expect(calls[0].searchParams.get('lat')).toBe('35.68');
+    expect(calls[0].searchParams.get('lon')).toBe('139.76');
+    expect(tripOf('g3').items[2].geo).toBeUndefined();
   }, 10_000);
 
   it('卸載時中止背景定位', async () => {

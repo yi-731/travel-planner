@@ -2,7 +2,7 @@
  * 行程分頁用的純邏輯：選哪一天、標題列文字、移動資訊的文字與圖示、表單欄位解析。
  * 沒有 React，方便寫測試（model.test.ts）。改行程頁顯示規則時先改這裡。
  */
-import { fmtMD, fromMinutes, toMinutes, weekday } from '@/domain/dates';
+import { fmtDayNo, fmtMD, fromMinutes, toMinutes, weekday } from '@/domain/dates';
 import { fmtMoney } from '@/domain/money';
 import { placeQuery, type SegmentInfo } from '@/domain/schedule';
 import type { ISODate, Item, LatLng } from '@/domain/types';
@@ -28,8 +28,8 @@ export function neighborDay(days: ISODate[], date: ISODate | null, dir: -1 | 1):
 /** 11/21（週六） */
 export const fmtMDWeek = (d: ISODate) => `${fmtMD(d)}（週${weekday(d)}）`;
 
-/** 'Day 2 · 11/21（週六）'（表單日期選單用） */
-export const dayOptionLabel = (days: ISODate[], d: ISODate) => `Day ${days.indexOf(d) + 1} · ${fmtMDWeek(d)}`;
+/** '第 2 天 · 11/21（週六）'（表單日期選單用） */
+export const dayOptionLabel = (days: ISODate[], d: ISODate) => `${fmtDayNo(days.indexOf(d) + 1)} · ${fmtMDWeek(d)}`;
 
 /* ---------------- 金額 ---------------- */
 
@@ -66,10 +66,10 @@ export function dayCost(items: Pick<Item, 'cost'>[]): number | null {
   return xs.reduce((a, b) => a + b, 0);
 }
 
-/** 標題列小字：'DAY 2 · 11/21（週六）· 預估 ¥12,800' */
+/** 標題列小字：'第 2 天 · 11/21（週六）· 預估 ¥12,800' */
 export function planEyebrow(days: ISODate[], date: ISODate | null, items: Pick<Item, 'cost'>[], currency: string): string {
   if (!date) return '尚未設定日期';
-  const head = `DAY ${days.indexOf(date) + 1} · ${fmtMDWeek(date)}`;
+  const head = `${fmtDayNo(days.indexOf(date) + 1)} · ${fmtMDWeek(date)}`;
   const cost = dayCost(items);
   // 全形括號後面本身有留白，「·」前不再加空格
   return cost != null && cost > 0 ? `${head}· 預估 ${fmtLocal(cost, currency)}` : head;
@@ -98,8 +98,10 @@ export function fmtKm(km: number): string {
 
 export interface SegmentLine {
   icon: IconName;
-  /** '約 25 分 · 電車'／'直線 1.2 km'／'路線與路況' */
+  /** '約 25 分 · 電車'／'直線 1.2 km'／'查路線' */
   text: string;
+  /** true = 沒有估計也沒有距離，text 只是「點這裡查」的提示，不是實際數字 */
+  hint: boolean;
   /** 太趕時顯示「時間可能不夠」 */
   warn: string | null;
   /** '建議 12:05 出發' */
@@ -112,10 +114,11 @@ export function segmentLine(seg: Pick<SegmentInfo, 'estimate' | 'distanceKm' | '
   let text: string;
   if (est) text = [`約 ${Math.round(est.minutes)} 分`, est.mode.trim()].filter(Boolean).join(' · ');
   else if (seg.distanceKm != null && Number.isFinite(seg.distanceKm)) text = `直線 ${fmtKm(seg.distanceKm)}`;
-  else text = '路線與路況';
+  else text = '查路線';
   return {
     icon: modeIcon(est?.mode, seg.distanceKm),
     text,
+    hint: !est && (seg.distanceKm == null || !Number.isFinite(seg.distanceKm)),
     warn: seg.tight ? '時間可能不夠' : null,
     leave: seg.leaveBy != null && seg.leaveBy >= 0 ? `建議 ${fromMinutes(seg.leaveBy)} 出發` : null,
   };
@@ -220,7 +223,7 @@ export function validateDraft(d: ItemDraft): DraftErrors {
 
 /**
  * 表單 → upsertItem 的欄位。geo：地址（或連結）是 Google 地圖分享連結就直接定位；
- * 地址改了又解析不出座標，就清掉舊座標讓地圖重新定位。
+ * 連結欄改成新的地圖連結會移動圖釘；地址改了又解析不出座標，就清掉舊座標讓地圖重新定位。
  */
 export function draftToPatch(d: ItemDraft, original: Item | null, parseLink: (s: string) => LatLng | null): Partial<Item> & Pick<Item, 'title'> {
   const opt = (s: string) => (s.trim() ? s.trim() : undefined);
@@ -239,15 +242,18 @@ export function draftToPatch(d: ItemDraft, original: Item | null, parseLink: (s:
     }
   };
   const fromAddr = safeParse(address);
+  const fromLink = safeParse(link);
   const addrChanged = (original?.address ?? '') !== (address ?? '');
   const titleChanged = (original?.title ?? '') !== d.title.trim();
+  const linkChanged = (original?.link ?? '') !== (link ?? '');
+  // 舊座標是從（已改掉的）連結來的：連結換了就不再可信
+  const geoFromOldLink = !!original?.geo && original.geo.source === 'link' && !safeParse(original.address);
   let geo: Item['geo'];
+  // 1. 地址欄貼的地圖連結最優先 2. 連結欄剛換成地圖連結 3. 沿用舊座標 4. 連結（沒有就清掉，讓地圖重新定位）
   if (fromAddr) geo = { ...fromAddr, source: 'link' };
-  else if (original?.geo && !addrChanged && !(titleChanged && !address)) geo = original.geo;
-  else {
-    const fromLink = safeParse(link);
-    geo = fromLink ? { ...fromLink, source: 'link' } : undefined;
-  }
+  else if (linkChanged && fromLink) geo = { ...fromLink, source: 'link' };
+  else if (original?.geo && !addrChanged && !(titleChanged && !address) && !(linkChanged && geoFromOldLink)) geo = original.geo;
+  else geo = fromLink ? { ...fromLink, source: 'link' } : undefined;
   const dur = num(d.durationMin);
   return {
     ...(original ? { id: original.id } : {}),

@@ -42,6 +42,8 @@ export const fmtLongMD = (s: string | null | undefined) => {
   const d = parseISODate(s);
   return d ? `${d.getMonth() + 1} 月 ${d.getDate()} 日` : '';
 };
+/** 第幾天：3 → '第 3 天'（所有畫面顯示天數都用這個） */
+export const fmtDayNo = (n: number) => `第 ${n} 天`;
 
 export function toMinutes(t: HHmm | undefined | null): number | null {
   const m = /^(\d{1,2}):(\d{2})/.exec(t ?? '');

@@ -22,7 +22,8 @@ export function eyebrowText(p: TripPhase): string {
     case 'none':
       return '尚未設定日期';
     case 'before':
-      return `${p.daysUntil === 1 ? '明天出發' : `${p.daysUntil} 天後出發`} · ${fmtMDWeek(p.focusDay)}`;
+      // 倒數天數放在「倒數」小卡（大字），這裡只說哪天出發，不重複
+      return `${fmtMDWeek(p.focusDay)}出發`;
     case 'during':
       return `DAY ${p.dayIndex + 1} / ${p.days.length} · ${fmtMDWeek(p.focusDay)}`;
     case 'after':
@@ -33,11 +34,15 @@ export function eyebrowText(p: TripPhase): string {
 /** 首頁大字：城市名，沒有就用行程名稱 */
 export const displayCity = (trip: Pick<Trip, 'city' | 'name'>) => trip.city.trim() || trip.name.trim() || '我的旅程';
 
-/** 依字數算城市名要縮到多小才放得下（單位：最長一個字詞的字數） */
+/**
+ * 依字數算城市名要縮到多小才放得下（單位：字數）。
+ * 拉丁文：12 個字以內（HONG KONG、NEW YORK）以整個名字計算，維持一行；更長的才按最長一個字詞換行。
+ */
 export function cityFitLength(name: string): number {
   if (hasCJK(name)) return Math.max(2, [...name.replace(/\s+/g, '')].length);
-  const longestWord = Math.max(...name.split(/\s+/).map((w) => w.length));
-  return Math.max(4, longestWord);
+  const t = name.trim().replace(/\s+/g, ' ');
+  const longestWord = Math.max(...t.split(' ').map((w) => w.length));
+  return Math.max(4, t.length <= 12 ? t.length : longestWord);
 }
 
 export type NextStatus = 'first' | 'next' | 'now';
@@ -92,6 +97,37 @@ export function travelInfo(seg: SegmentInfo | null): TravelInfo {
   if (seg.estimate && Number.isFinite(seg.estimate.minutes)) return { kind: 'estimate', seg, minutes: Math.round(seg.estimate.minutes), mode: seg.estimate.mode };
   if (seg.distanceKm != null && Number.isFinite(seg.distanceKm)) return { kind: 'distance', seg, km: seg.distanceKm };
   return { kind: 'route', seg };
+}
+
+export type TravelTileKind =
+  | { kind: 'countdown'; daysUntil: number; tripDays: number }
+  | { kind: 'setDates' }
+  | TravelInfo;
+
+/**
+ * 首頁第三張小卡依旅程階段決定：
+ * - 出發前：倒數天數（路況在出發前沒有意義）
+ * - 沒設日期：提醒設定日期
+ * - 旅途中：移動資訊（AI 估計 → 直線距離 → 路線 → 即時路況）
+ * - 結束後：首頁不顯示小卡（見 showHomeTiles）
+ */
+export function travelTileKind(phase: TripPhase, seg: SegmentInfo | null): TravelTileKind {
+  if (phase.phase === 'before') return { kind: 'countdown', daysUntil: phase.daysUntil, tripDays: phase.days.length };
+  if (phase.phase === 'none') return { kind: 'setDates' };
+  return travelInfo(seg);
+}
+
+/** 旅程結束後，天氣、花費、路況小卡都沒有意義（回顧卡已有總花費與統計），整排不顯示 */
+export const showHomeTiles = (phase: TripPhase['phase']) => phase !== 'after';
+
+/**
+ * 旅途中「時間已過但還沒打勾」的行程點：開始時間＋停留時間已早於現在（與 pickNextStop 的結束規則相同）。
+ * 主卡正在顯示的那一站不算（所有站都過了時，主卡會退回第一個沒完成的）。
+ */
+export function isPastStop(item: Pick<Item, 'time' | 'durationMin' | 'done'>, nowMin: number): boolean {
+  if (item.done) return false;
+  const t = toMinutes(item.time);
+  return t != null && t + (item.durationMin ?? 0) < nowMin;
 }
 
 /** 0.85 → { value: '850', unit: 'm' }；3.24 → { value: '3.2', unit: 'km' } */

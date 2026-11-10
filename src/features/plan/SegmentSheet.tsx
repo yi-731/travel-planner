@@ -1,14 +1,16 @@
 /**
  * 「移動」彈出頁：兩站之間要多久、何時出發，以及各種交通方式的地圖連結。
- * 有 AI 排程檢查結果就用大字顯示分鐘數；沒有就建議跑一次檢查（可直接在這裡執行）。
+ * 有 AI 排程檢查結果就用大字顯示分鐘數；沒有就先放基本時間，再放一行「AI 檢查」（可直接在這裡執行）。
  */
+import type { ReactNode } from 'react';
+import { durationWord } from '@/domain/constants';
 import { fmtMD, fromMinutes, toMinutes } from '@/domain/dates';
 import { daySegments, haversineKm, segmentEstimate, type SegmentInfo } from '@/domain/schedule';
 import type { Item, Trip } from '@/domain/types';
 import { useDayCheck } from '@/features/ai/useDayCheck';
 import { appleMapsNavigate, gmapsDirections, gmapsTraffic, type TravelMode } from '@/services/links';
 import { useActiveTrip } from '@/store/data';
-import { Button, Empty, Icon, ListGroup, ListRow, Note, Orb, Sheet, Spinner, type IconName } from '@/ui';
+import { Empty, Icon, ListGroup, ListRow, Note, Orb, Sheet, Spinner, type IconName } from '@/ui';
 import { fmtKm, fmtMDWeek, modeIcon, navQuery, tightDetail, travelMinutes } from './model';
 import s from './plan.module.css';
 
@@ -57,94 +59,120 @@ function Segment({ trip, seg }: { trip: Trip; seg: SegmentInfo }) {
   const origin = navQuery(from),
     dest = navQuery(to);
   const travel = travelMinutes(seg);
-  const tight = tightDetail(seg);
+  // 兩站在不同天（例如打開後改了日期）：時間差沒有意義，不算空檔也不警告
+  const crossDay = !!from.date && !!to.date && from.date !== to.date;
+  const tight = crossDay ? null : tightDetail(seg);
   const suggested = estimate ? ICON_MODE[modeIcon(estimate.mode)] : undefined;
 
   // 時間：上一站結束（開始＋停留）→ 下一站開始
   const startA = toMinutes(from.time),
     startB = toMinutes(to.time);
   const endA = startA != null ? startA + (from.durationMin ?? 0) : null;
-  const gap = endA != null && startB != null ? startB - endA : null;
+  const gap = endA != null && startB != null && !crossDay ? startB - endA : null;
   const leaveBy = seg.leaveBy != null && seg.leaveBy >= 0 ? seg.leaveBy : null;
 
+  const ride = from.type === 'transport';
+  const leaveSub = from.durationMin
+    ? `${durationWord(from.type)} ${from.durationMin} 分後`
+    : from.time
+      ? ride
+        ? '沒填所需時間'
+        : '沒填停留時間'
+      : '時間未定';
+
+  // 標題：兩行，第二行前面用小字「到」，避免和行程點名稱裡的箭頭混在一起
   const title = (
     <span className={s.segTitle}>
       <span className={s.segFrom}>{from.title}</span>
       <span className={s.segTo}>
-        <Icon name="arrow" size={20} stroke={2.4} className={s.segArrow} />
+        <span className={s.segToLabel}>到</span>
         <span>{to.title}</span>
       </span>
     </span>
   );
 
-  return (
-    <Sheet eyebrow={date ? `移動 · ${fmtMDWeek(date)}` : '移動'} title={title}>
-      {estimate ? (
-        <section className={s.hero} aria-label="AI 估計">
-          <Orb size={260} halo style={{ right: -90, top: -110 }} />
-          <Orb size={190} style={{ right: -46, top: -70 }} />
-          <div className={s.glass}>
-            <span className="eyebrow">AI 估計</span>
-            <div className={s.minRow}>
-              <span className={`serif num ${s.bigMin}`}>{Math.round(estimate.minutes)}</span>
-              <span className={s.minUnit}>分鐘{estimate.mode.trim() ? ` · ${estimate.mode.trim()}` : ''}</span>
-            </div>
-            {estimate.tip && <p className={s.tip}>{estimate.tip}</p>}
-            {leaveBy != null && (
-              <span className={`num ${s.leaveLine} ${seg.tight ? s.leaveWarn : ''}`}>
-                <Icon name="clock" size={14} stroke={2.4} />
-                建議 {fromMinutes(leaveBy)} 前出發，{fromMinutes(leaveBy + Math.round(estimate.minutes))} 抵達
-              </span>
-            )}
-          </div>
-        </section>
-      ) : (
-        <Note>
-          <strong>還沒有這段的 AI 估計</strong>
-          <span>
-            {date
-              ? 'AI 排程檢查會估計這天每段移動要多久、怎麼去最順，並提醒太趕的地方。'
-              : '兩站不在同一天，AI 排程檢查不會估計這段。可以直接用下面的地圖查路線。'}
+  const hero = estimate && (
+    <section className={s.hero} aria-label="AI 估計">
+      <Orb size={260} halo style={{ right: -90, top: -110 }} />
+      <Orb size={190} style={{ right: -46, top: -70 }} />
+      <div className={s.glass}>
+        <span className="eyebrow">AI 估計</span>
+        <div className={s.minRow}>
+          <span className={`serif num ${s.bigMin}`}>{Math.round(estimate.minutes)}</span>
+          <span className={s.minUnit}>分鐘{estimate.mode.trim() ? ` · ${estimate.mode.trim()}` : ''}</span>
+        </div>
+        {estimate.tip && <p className={s.tip}>{estimate.tip}</p>}
+        {leaveBy != null && (
+          <span className={`num ${s.leaveLine} ${seg.tight ? s.leaveWarn : ''}`}>
+            <Icon name="clock" size={14} stroke={2.4} />
+            建議 {fromMinutes(leaveBy)} 前出發，{fromMinutes(leaveBy + Math.round(estimate.minutes))} 抵達
           </span>
-          {date && (
-            <span className={s.noteAction}>
-              <Button variant="go" icon="spark" disabled={ai.busy} onClick={() => void ai.run()}>
-                {ai.busy ? (
-                  <>
-                    <Spinner /> 檢查中…
-                  </>
-                ) : (
-                  `AI 檢查 ${fmtMD(date)} 的行程`
-                )}
-              </Button>
-            </span>
-          )}
-          {ai.error && <span className={s.err}>{ai.error}</span>}
-        </Note>
-      )}
+        )}
+      </div>
+    </section>
+  );
 
-      {tight && (
-        <Note tone="warn">
-          <strong>時間可能不夠</strong>
-          <span className="num">
-            {from.durationMin ? `在「${from.title}」停留 ${from.durationMin} 分，` : ''}
-            {tight.leaveAt} 出發{travel ? `、移動約 ${travel} 分` : ''}，會在 {tight.arriveAt} 抵達，比預定的 {to.time} 晚 {tight.lateMin}{' '}
-            分。可以提早出發或縮短停留。
-          </span>
-        </Note>
-      )}
+  // 還沒有估計：只放一行可以點的「AI 檢查」；兩站不在同一天就不放（下面的 Google 地圖就夠用）
+  const askAI = !estimate && date && (
+    <div className={s.askAI}>
+      <ListGroup>
+        <ListRow
+          icon="spark"
+          title={`AI 檢查 ${fmtMD(date)} 的行程`}
+          subtitle={ai.busy ? '檢查中…' : '估計這天每段怎麼走、要多久'}
+          end={ai.busy ? <Spinner /> : undefined}
+          chevron={!ai.busy}
+          onClick={() => void ai.run()}
+        />
+      </ListGroup>
+      {ai.error && !ai.busy && <span className={`${s.err} ${s.askAIErr}`}>{ai.error}</span>}
+    </div>
+  );
 
+  const tightNote = tight && (
+    <Note tone="warn">
+      <strong>時間可能不夠</strong>
+      <span className="num">
+        {from.durationMin
+          ? ride
+            ? `「${from.title}」需時 ${from.durationMin} 分，`
+            : `在「${from.title}」停留 ${from.durationMin} 分，`
+          : ''}
+        {tight.leaveAt} 出發{travel ? `、移動約 ${travel} 分` : ''}，會在 {tight.arriveAt} 抵達，比預定的 {to.time} 晚 {tight.lateMin}{' '}
+        分。可以提早出發或{ride ? '調整時間' : '縮短停留'}。
+      </span>
+    </Note>
+  );
+
+  const gapH = gap != null && gap >= 90 ? Math.floor(gap / 60) : null;
+  const gapM = gap != null ? gap % 60 : 0;
+  const facts = (
+    <>
       {(endA != null || startB != null) && (
         <div className={s.stats}>
-          <Stat
-            label="離開"
-            value={endA != null ? fromMinutes(endA) : '—'}
-            sub={from.durationMin ? `停留 ${from.durationMin} 分後` : from.time ? '開始時間' : '時間未定'}
-          />
+          <Stat label="離開" value={endA != null ? fromMinutes(endA) : '—'} sub={leaveSub} />
           <Stat
             label="空檔"
-            value={gap != null ? String(gap) : '—'}
-            unit={gap != null ? '分' : undefined}
+            value={
+              gap == null ? (
+                '—'
+              ) : gapH != null ? (
+                // 90 分以上寫成「4小時20分」，數字維持大字、單位用小字，才放得進格子
+                <>
+                  {gapH}
+                  <span className={s.statUnit}>小時</span>
+                  {gapM ? (
+                    <>
+                      {gapM}
+                      <span className={s.statUnit}>分</span>
+                    </>
+                  ) : null}
+                </>
+              ) : (
+                String(gap)
+              )
+            }
+            unit={gap != null && gapH == null ? '分' : undefined}
             sub={travel != null ? `移動約 ${travel} 分` : '可用來移動'}
             warn={!!tight || (gap != null && gap < 0)}
           />
@@ -157,6 +185,25 @@ function Segment({ trip, seg }: { trip: Trip; seg: SegmentInfo }) {
           <Icon name="pin" size={16} />
           <span className="num">直線距離 {fmtKm(seg.distanceKm)}</span>
         </div>
+      )}
+    </>
+  );
+
+  return (
+    <Sheet eyebrow={date ? `移動 · ${fmtMDWeek(date)}` : '移動'} title={title}>
+      {/* 有 AI 估計：大字估計在最上面；沒有：先放基本時間，再放一行 AI 檢查 */}
+      {estimate ? (
+        <>
+          {hero}
+          {tightNote}
+          {facts}
+        </>
+      ) : (
+        <>
+          {facts}
+          {askAI}
+          {tightNote}
+        </>
       )}
 
       <ListGroup title="用 Google 地圖查路線">
@@ -182,7 +229,7 @@ function Segment({ trip, seg }: { trip: Trip; seg: SegmentInfo }) {
   );
 }
 
-function Stat({ label, value, unit, sub, warn }: { label: string; value: string; unit?: string; sub?: string; warn?: boolean }) {
+function Stat({ label, value, unit, sub, warn }: { label: string; value: ReactNode; unit?: string; sub?: string; warn?: boolean }) {
   return (
     <div className={`${s.stat} ${warn ? s.statWarn : ''}`}>
       <span className={s.statLabel}>{label}</span>

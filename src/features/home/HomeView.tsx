@@ -1,6 +1,7 @@
 /**
  * 「今天」分頁（首頁）：一眼看出下一步。
- * 由上而下：標題列（倒數／第幾天）→ 城市大字 → 主卡（下一站／回顧／空狀態）→ 三張小卡 → 當日行程。
+ * 由上而下：標題列（出發日／第幾天）→ 城市大字 → 主卡（下一站／回顧／空狀態）→ 三張小卡 → 當日行程。
+ * 旅程結束後不顯示小卡，當日行程換成「回顧全部行程」一列。
  * 顯示規則（下一站怎麼挑、移動資訊、花費摘要）在 ./model.ts，有測試。
  */
 import { motion, useReducedMotion } from 'motion/react';
@@ -10,10 +11,10 @@ import { daySegments, itemsOfDay } from '@/domain/schedule';
 import type { Trip } from '@/domain/types';
 import { useActiveTrip } from '@/store/data';
 import { useUI } from '@/store/ui';
-import { DayList } from './DayList';
+import { DayList, ReviewRow } from './DayList';
 import { HeroCard } from './HeroCard';
 import { HomeTiles } from './HomeTiles';
-import { cityFitLength, displayCity, eyebrowText, hasCJK, pickNextStop, segmentInto } from './model';
+import { cityFitLength, displayCity, eyebrowText, hasCJK, pickNextStop, segmentInto, showHomeTiles } from './model';
 import { useNow } from './useNow';
 import s from './home.module.css';
 
@@ -77,22 +78,40 @@ function Home({ trip }: { trip: Trip }) {
         <HeroCard trip={trip} phase={phase} next={next} dayCount={dayItems.length} seg={seg} nowMin={now.minutes} />
       </motion.div>
 
-      <motion.div {...enter(2)}>
-        <HomeTiles trip={trip} phase={phase} seg={seg} />
-      </motion.div>
-
-      {dayItems.length > 0 && (
-        <motion.div {...enter(3)}>
-          <DayList
-            title={listTitle}
-            items={dayItems}
-            nextId={next?.item.id}
-            onShowAll={() => {
-              selectDate(focusDay);
-              setTab('plan');
-            }}
-          />
+      {showHomeTiles(phase.phase) && (
+        <motion.div {...enter(2)}>
+          <HomeTiles trip={trip} phase={phase} seg={seg} />
         </motion.div>
+      )}
+
+      {phase.phase === 'after' ? (
+        trip.items.length > 0 && (
+          <motion.div {...enter(2)}>
+            <ReviewRow
+              count={trip.items.length}
+              onClick={() => {
+                selectDate(phase.days[0] ?? null);
+                setTab('plan');
+              }}
+            />
+          </motion.div>
+        )
+      ) : (
+        dayItems.length > 0 && (
+          <motion.div {...enter(3)}>
+            <DayList
+              title={listTitle}
+              items={dayItems}
+              nextId={next?.item.id}
+              during={phase.phase === 'during'}
+              nowMin={now.minutes}
+              onShowAll={() => {
+                selectDate(focusDay);
+                setTab('plan');
+              }}
+            />
+          </motion.div>
+        )
       )}
     </div>
   );

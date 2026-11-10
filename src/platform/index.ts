@@ -183,11 +183,26 @@ export async function currentPosition(): Promise<{ lat: number; lng: number } | 
   }
 }
 
+/** 「牆上時間」：月份 1–12，不帶時區 */
+export interface WallClock {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+}
+
 export interface Reminder {
   id: number;
   title: string;
   body: string;
+  /** 用手機目前時區換算的時間點：只用來略過已過去的提醒、排序 */
   at: Date;
+  /**
+   * 行程上寫的當地時間。有這個就用「浮動時間」排程：iOS 會在手機當下所在時區的這個時刻通知，
+   * 所以在台灣先排好、到了日本也會照日本時間提醒（出發當天在機場的行程則照台灣時間）。
+   */
+  wall?: WallClock;
   /** 點通知時帶回的資料（用來打開對應行程點） */
   extra?: { tripId: string; itemId: string };
 }
@@ -204,7 +219,15 @@ export async function scheduleReminders(reminders: Reminder[]): Promise<boolean>
     const future = reminders.filter((r) => r.at.getTime() > Date.now()).slice(0, 60);
     if (future.length)
       await LocalNotifications.schedule({
-        notifications: future.map((r) => ({ id: r.id, title: r.title, body: r.body, extra: r.extra, schedule: { at: r.at, allowWhileIdle: true } })),
+        notifications: future.map((r) => ({
+          id: r.id,
+          title: r.title,
+          body: r.body,
+          extra: r.extra,
+          // on（含年份）＝ 只會符合一次的日曆觸發；Capacitor 一律設成 repeats，但年份過了就不會再響。
+          // 每次重排前都會先取消全部待送通知，不會累積。
+          schedule: r.wall ? { on: { ...r.wall }, allowWhileIdle: true } : { at: r.at, allowWhileIdle: true },
+        })),
       });
     return true;
   } catch {

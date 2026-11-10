@@ -1,6 +1,14 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Item, Trip } from '@/domain/types';
-import { applyImport, interpretSheets, readPastedText, readSpreadsheetFile, type ImportResult, type RawSheets } from './importer';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import type { Expense, Item, Trip } from '@/domain/types';
+import { applyImport, interpretSheets, readPastedText, readSpreadsheetFile, replaceRemovals, type ImportResult, type RawSheets } from './importer';
+
+// 在台灣時區跑：UTC 時區會藏住「16:00Z 剛好是台北午夜」這類問題
+const ORIGINAL_TZ = process.env.TZ;
+process.env.TZ = 'Asia/Taipei';
+afterAll(() => {
+  if (ORIGINAL_TZ === undefined) delete process.env.TZ;
+  else process.env.TZ = ORIGINAL_TZ;
+});
 
 type Opts = { name: string; startDate: string | null; localCurrency: string };
 const opts: Opts = { name: '京都.xlsx', startDate: '2026-11-21', localCurrency: 'JPY' };
@@ -69,6 +77,22 @@ describe('interpretSheets：欄位辨識', () => {
     expect(r.items[0].time).toBeUndefined();
   });
 
+  it('沒有名稱欄時「地點」就是行程名稱', () => {
+    const a = run([['日期', '時間', '地點', '備註'], ['11/21', '09:00', '清水寺', '早點去'], ['11/21', '12:00', '錦市場', '']]);
+    expect(a.items.map((i) => [i.title, i.time, i.note, i.address])).toEqual([['清水寺', '09:00', '早點去', undefined], ['錦市場', '12:00', undefined, undefined]]);
+    expect(a.warnings).toEqual([]);
+    const b = run([['Date', 'Time', 'Place', 'Notes'], ['2026-11-22', '10:00', 'Fushimi Inari', 'go early']]);
+    expect(b.items[0]).toMatchObject({ title: 'Fushimi Inari', time: '10:00', note: 'go early' });
+    // 另外還有地址欄：地點是名稱、地址是地址
+    const c = run([['日期', '地點', '地址'], ['11/21', '金閣寺', '京都市北區金閣寺町1']]);
+    expect(c.items[0]).toMatchObject({ title: '金閣寺', address: '京都市北區金閣寺町1' });
+    // 有費用欄也照樣匯入成行程點（不會因為「沒有名稱」整列略過）
+    const d = run([['日期', '時間', '地點', '費用'], ['11/21', '09:00', '清水寺', '500'], ['11/21', '13:00', '二年坂', '']]);
+    expect(d.items.map((i) => [i.title, i.cost])).toEqual([['清水寺', 500], ['二年坂', undefined]]);
+    expect(d.expenses).toEqual([]);
+    expect(d.warnings).toEqual([]);
+  });
+
   it('找不到標題列的工作表會略過並提醒', () => {
     const r = interpretSheets({ 封面: [['京都'], ['2026']], 行程: [['日期', '行程'], ['11/21', '清水寺']] }, opts);
     expect(r.items).toHaveLength(1);
@@ -96,8 +120,14 @@ describe('interpretSheets：日期', () => {
     expect(dates([xlsxDate(2026, 11, 21), xlsxDate(2027, 1, 2)])).toEqual(['2026-11-21', '2027-01-02']);
   });
 
-  it('程式建立的當地午夜 Date 也正確', () => {
-    expect(dates([new Date(2026, 10, 23)])).toEqual(['2026-11-23']);
+  it('台北 16:00、東京 15:00（剛好是當地午夜）的日期時間不會跳到隔天', () => {
+    for (const tz of ['Asia/Taipei', 'Asia/Tokyo', 'America/Los_Angeles']) {
+      process.env.TZ = tz;
+      expect(dates([xlsxDate(2026, 11, 21, 15, 0), xlsxDate(2026, 11, 21, 16, 0), 46347.667])).toEqual(['2026-11-21', '2026-11-21', '2026-11-21']);
+      const r = run([['日期時間', '行程'], [xlsxDate(2026, 11, 21, 16, 0), '晚餐'], [xlsxDate(2026, 11, 22, 15, 0), '夜景']]);
+      expect(r.items.map((i) => [i.title, i.date, i.time])).toEqual([['晚餐', '2026-11-21', '16:00'], ['夜景', '2026-11-22', '15:00']]);
+    }
+    process.env.TZ = 'Asia/Taipei';
   });
 
   it('Excel 日期序號', () => {
@@ -176,6 +206,14 @@ describe('interpretSheets：時間', () => {
   it('xlsx Date 物件與一天的比例', () => {
     // 套件把 0.395833 轉成 1899-12-30T09:29:59.999Z
     expect(times([new Date(Math.floor((0.3958333 - 25569) * 86_400_000)), 0.395833, 0.75, xlsxDate(2026, 11, 21, 18, 5)])).toEqual(['09:30', '09:30', '18:00', '18:05']);
+  });
+
+  it('只有時間的 xlsx 儲存格在 15:00、16:00 也正確（各時區）', () => {
+    for (const tz of ['Asia/Taipei', 'Asia/Tokyo']) {
+      process.env.TZ = tz;
+      expect(times([xlsxDate(1899, 12, 30, 16, 0), xlsxDate(1899, 12, 30, 15, 0), xlsxDate(2026, 11, 21, 16, 0)])).toEqual(['16:00', '15:00', '16:00']);
+    }
+    process.env.TZ = 'Asia/Taipei';
   });
 
   it('各種文字格式', () => {
@@ -276,6 +314,87 @@ describe('interpretSheets：記帳工作表', () => {
       { date: '2026-11-22', title: '門票', amount: 600, currency: 'JPY', category: 'ticket', payer: '小明', split: ['小明', '小華'] },
       { date: '2026-11-22', title: '購物', amount: 300, currency: 'JPY', category: 'shop', payer: '', split: [] },
     ]);
+  });
+
+  it('幣別常見寫法（NTD、RMB、yen）換成正式代碼；不是幣別的三個字母改用預設幣別', () => {
+    const r = interpretSheets(
+      one([['日期', '項目', '金額', '幣別'], ['11/21', 'a', 100, 'NTD'], ['11/21', 'b', 100, 'ntd'], ['11/21', 'c', 100, 'RMB'], ['11/21', 'd', 100, 'yen'], ['11/21', 'e', 100, 'Yen'], ['11/21', 'f', 100, 'krw'], ['11/21', 'g', 100, 'abc']], '記帳'),
+      opts,
+    );
+    expect(r.expenses.map((e) => e.currency)).toEqual(['TWD', 'TWD', 'CNY', 'JPY', 'JPY', 'KRW', 'JPY']);
+  });
+
+  it('沒用工作表名稱標明時看欄位：有付款人、分攤就是記帳（不需要幣別欄）', () => {
+    const r = interpretSheets(
+      one([['日期', '項目', '金額', '付款人', '分攤'], ['11/21', '拉麵', '1200', '小明', '小明、小華'], ['11/21', '計程車', '980', '小華', '']], '工作表1'),
+      opts,
+    );
+    expect(r.items).toEqual([]);
+    expect(r.expenses.map((e) => [e.title, e.amount, e.payer, e.split])).toEqual([['拉麵', 1200, '小明', ['小明', '小華']], ['計程車', 980, '小華', []]]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it('從試算表貼上的記帳（日期 項目 金額 分類 付款人）', () => {
+    const r = interpretSheets(readPastedText('日期\t項目\t金額\t分類\t付款人\n11/21\t拉麵\t1200\t餐飲\t小明\n'), opts);
+    expect(r.items).toEqual([]);
+    expect(r.expenses[0]).toMatchObject({ title: '拉麵', amount: 1200, category: 'food', payer: '小明' });
+  });
+
+  it('日期 景點 費用 幣別：有幣別欄也還是行程表', () => {
+    const r = interpretSheets(one([['日期', '景點', '費用', '幣別'], ['11/21', '清水寺', '500', 'JPY'], ['11/22', '伏見稻荷', '0', 'JPY']], '京都'), opts);
+    expect(r.items.map((i) => [i.title, i.cost])).toEqual([['清水寺', 500], ['伏見稻荷', 0]]);
+    expect(r.expenses).toEqual([]);
+  });
+
+  it('判斷可能錯的時候提醒（行程表有付款人欄、記帳有「行程」欄）', () => {
+    const a = interpretSheets(one([['日期', '時間', '行程', '地址', '費用', '付款人'], ['11/21', '09:00', '清水寺', '東山區', '500', '小明']], '工作表1'), opts);
+    expect(a.items).toHaveLength(1);
+    expect(a.warnings.some((w) => w.includes('工作表「工作表1」有付款人或分攤欄位') && w.includes('「記帳」'))).toBe(true);
+    const b = interpretSheets(one([['日期', '行程', '費用', '付款人', '分攤'], ['11/21', '午餐', '1200', '小明', '']]), opts);
+    expect(b.expenses).toHaveLength(1);
+    expect(b.warnings.some((w) => w.startsWith('這張表有「行程」欄，像是行程表'))).toBe(true);
+    // 工作表名稱寫明是記帳：不提醒
+    const c = interpretSheets(one([['日期', '行程', '費用', '付款人'], ['11/21', '午餐', '1200', '小明']], '記帳'), opts);
+    expect(c.warnings).toEqual([]);
+  });
+
+  it('分攤：有分隔符號時名字裡的空白保留；只用空白分開時拆開（但認得付款人與成員的全名）', () => {
+    const r = interpretSheets(
+      one(
+        [
+          ['日期', '項目', '金額', '付款人', '分攤'],
+          ['11/21', 'a', 1, 'Amy Chen', 'Amy Chen、Bob Lin'],
+          ['11/21', 'b', 1, 'Bob Lin', '小明 小華'],
+          ['11/21', 'c', 1, '小明', 'Amy Chen'],
+          ['11/21', 'd', 1, '小明', 'Cara Wu'],
+        ],
+        '記帳',
+      ),
+      { ...opts, members: ['Cara Wu'] },
+    );
+    expect(r.expenses.map((e) => e.split)).toEqual([['Amy Chen', 'Bob Lin'], ['小明', '小華'], ['Amy Chen'], ['Cara Wu']]);
+    // 匯出再匯入不會多出假的成員
+    const t = applyImport(mkTrip({ members: ['Amy Chen', 'Bob Lin', '小明', '小華', 'Cara Wu'] }), r, 'append');
+    expect(t.members).toEqual(['Amy Chen', 'Bob Lin', '小明', '小華', 'Cara Wu']);
+  });
+
+  it('新行程還沒有出發日：記帳的「第 N 天」與沒寫日期的先空著，建立行程時依出發日換算', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 10, 12));
+    const raw = {
+      行程: [['日期', '行程'], ['第1天', '清水寺'], ['第2天', '伏見稻荷']],
+      記帳: [['日期', '項目', '金額'], ['', '交通卡', '2000'], ['第2天', '午餐', '1200']],
+    };
+    const r = interpretSheets(raw, { ...opts, startDate: null });
+    expect(r.expenses.map((e) => [e.date, e.dayOffset])).toEqual([[null, undefined], [null, 2]]);
+    expect(r.warnings).toContain('1 筆花費沒有日期，先記在出發日。');
+    const t = applyImport(mkTrip({ startDate: '2027-03-01' }), r, 'new');
+    expect(t.items.map((i) => i.date)).toEqual(['2027-03-01', '2027-03-02']);
+    expect(t.expenses.map((e) => [e.title, e.date])).toEqual([['交通卡', '2027-03-01'], ['午餐', '2027-03-02']]);
+    expect(t.expenses.every((e) => !('dayOffset' in e))).toBe(true);
+    // 沒填出發日：沒有日期可依的時候才用今天
+    const noStart = applyImport(mkTrip(), r, 'new');
+    expect(noStart.expenses.map((e) => e.date)).toEqual(['2026-11-10', '2026-11-11']);
   });
 
   it('合計列不匯入（不論寫在哪一欄）', () => {
@@ -474,7 +593,7 @@ describe('applyImport', () => {
     expect(t.endDate).toBe('2026-11-23');
   });
 
-  it('replace：花費只加入還沒有的（同日期＋名稱＋金額）', () => {
+  it('replace：沒有標記的舊花費完全相同時不重複加入（同日期＋名稱＋金額＋幣別）', () => {
     const now = 1;
     const base = mkTrip({
       expenses: [
@@ -488,5 +607,76 @@ describe('applyImport', () => {
       '2026-11-21 拉麵 1200', '2026-11-21 咖啡 500', '2026-11-21 咖啡 500', '2026-11-21 拉麵 1300', '2026-11-22 拉麵 1200',
     ]);
     expect(t.expenses.slice(0, 2).map((e) => e.id)).toEqual(['e1', 'e2']);
+    expect(t.expenses.every((e) => e.fromSheet)).toBe(true);
+  });
+
+  describe('replace：花費以試算表為準', () => {
+    const exp = (id: string, title: string, amount: number, patch: Partial<Expense> = {}): Expense => ({
+      id, date: '2026-11-21', title, amount, currency: 'JPY', category: 'food', payer: '小明', split: [], createdAt: 1, updatedAt: 1, fromSheet: true, ...patch,
+    });
+    const sheet = (rows: unknown[][]) =>
+      interpretSheets({ 記帳: [['日期', '項目', '金額', '幣別', '付款人'], ...rows] }, opts);
+    const base = (expenses: Expense[]) => mkTrip({ startDate: '2026-11-21', members: ['小明', '小華'], expenses });
+
+    it('試算表改了金額：更新原本那筆（保留 id、收據），不會多一筆', () => {
+      const t = applyImport(base([exp('e1', '晚餐', 10000, { receiptBlobKey: 'r1' })]), sheet([['11/21', '晚餐', '1000', 'JPY', '小明']]), 'replace');
+      expect(t.expenses.map((e) => [e.id, e.title, e.amount, e.receiptBlobKey])).toEqual([['e1', '晚餐', 1000, 'r1']]);
+      expect(t.expenses[0].updatedAt).toBeGreaterThan(1);
+    });
+
+    it('沒有變的花費原封不動', () => {
+      const e1 = exp('e1', '晚餐', 1000);
+      const t = applyImport(base([e1]), sheet([['11/21', '晚餐', '1000', 'JPY', '小明']]), 'replace');
+      expect(t.expenses).toEqual([e1]);
+    });
+
+    it('試算表刪掉的列移除；App 裡記的花費保留', () => {
+      const app = exp('app', '咖啡', 450, { fromSheet: undefined });
+      const before = base([exp('e1', '晚餐', 1000), exp('e2', '午餐', 800), app]);
+      const t = applyImport(before, sheet([['11/21', '晚餐', '1000', 'JPY', '小明']]), 'replace');
+      expect(t.expenses.map((e) => e.id)).toEqual(['e1', 'app']);
+      expect(t.expenses[1]).toEqual(app);
+      // 確認畫面可以事先列出會被移除的
+      expect(replaceRemovals(before, t).expenses.map((e) => e.title)).toEqual(['午餐']);
+      expect(replaceRemovals(before, t).items).toEqual([]);
+    });
+
+    it('同名稱但幣別不同是兩筆，不會合併', () => {
+      const r = sheet([['11/21', '午餐', '1000', 'JPY', '小明'], ['11/21', '午餐', '1000', 'TWD', '小明']]);
+      const first = applyImport(base([]), r, 'replace');
+      expect(first.expenses.map((e) => `${e.amount} ${e.currency}`)).toEqual(['1000 JPY', '1000 TWD']);
+      const again = applyImport(first, r, 'replace');
+      expect(again.expenses.map((e) => e.id)).toEqual(first.expenses.map((e) => e.id));
+      // App 裡記的同名、不同幣別：不當成試算表那筆
+      const app = exp('app', '午餐', 1000, { currency: 'TWD', fromSheet: undefined });
+      const t = applyImport(base([app]), sheet([['11/21', '午餐', '1000', 'JPY', '小明']]), 'replace');
+      expect(t.expenses.map((e) => [e.id === 'app', e.currency])).toEqual([[true, 'TWD'], [false, 'JPY']]);
+    });
+
+    it('試算表沒寫付款人、沒有分攤欄：保留 App 裡的付款人與分攤', () => {
+      const old = exp('e1', '晚餐', 1000, { payer: '小華', split: ['小華'] });
+      const t = applyImport(base([old]), sheet([['11/21', '晚餐', '1200', 'JPY', '']]), 'replace');
+      expect(t.expenses[0]).toMatchObject({ id: 'e1', amount: 1200, payer: '小華', split: ['小華'] });
+    });
+
+    it('試算表沒有任何花費（只有行程表）時，不移除花費', () => {
+      const r = interpretSheets(one([['日期', '行程'], ['11/21', '清水寺']]), opts);
+      const t = applyImport(base([exp('e1', '晚餐', 1000)]), r, 'replace');
+      expect(t.expenses.map((e) => e.id)).toEqual(['e1']);
+    });
+  });
+
+  it('replace：試算表沒有的欄位保留 App 裡填的備註、停留、評分、連結、時間、類型', () => {
+    const old = mkItem({
+      id: 'k', title: '清水寺', date: '2026-11-21', type: 'food', note: '我在 App 裡寫的筆記', durationMin: 90, rating: 4,
+      link: 'https://example.com', time: '09:00', cost: 400,
+    });
+    const keep = applyImport(mkTrip({ items: [old] }), run([['日期', '行程'], ['11/21', '清水寺']]), 'replace');
+    expect(keep.items[0]).toMatchObject({ id: 'k', type: 'food', note: '我在 App 裡寫的筆記', durationMin: 90, rating: 4, link: 'https://example.com', time: '09:00', cost: 400 });
+    // 試算表有這一欄：照試算表（填了就更新，空白就清掉）
+    const sheet = run([['日期', '時間', '行程', '類型', '備註', '評分'], ['11/21', '10:00', '清水寺', '景點', '', '5']]);
+    const upd = applyImport(mkTrip({ items: [old] }), sheet, 'replace');
+    expect(upd.items[0]).toMatchObject({ id: 'k', time: '10:00', type: 'sight', rating: 5, durationMin: 90 });
+    expect(upd.items[0].note).toBeUndefined();
   });
 });

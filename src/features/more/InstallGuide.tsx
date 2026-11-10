@@ -1,5 +1,6 @@
 /**
  * 「安裝到 iPhone 主畫面」三步驟圖解（只在瀏覽器、尚未安裝時顯示）。
+ * 上方提醒：主畫面 App 和 Safari 的資料分開存，要先安裝再輸入，或用備份檔搬過去。
  * 圖都是用 CSS 畫的示意圖，跟著淺色／深色主題變色。
  */
 import { Icon } from '@/ui';
@@ -53,17 +54,24 @@ const STEPS = [
 
 export function InstallGuide() {
   return (
-    <ol className={s.install} aria-label="安裝步驟">
-      {STEPS.map((st, i) => (
-        <li key={i} className={s.step}>
-          <span className={s.illo}>{st.art}</span>
-          <span className={s.stepText}>
-            <span className={`serif num ${s.stepNum}`}>{i + 1}</span>
-            <b>{st.title}</b>
-            <small>{st.sub}</small>
-          </span>
-        </li>
-      ))}
-    </ol>
+    <div className={s.installWrap}>
+      {/* iOS 的主畫面 App 和 Safari 各有各的資料，不會互通 */}
+      <p className={s.installNote}>
+        <b>請先加入主畫面，再開始輸入行程。</b>
+        在 Safari 裡輸入的資料不會帶到主畫面的 App。已經輸入了的話，先在這頁按「備份全部資料」存檔，從主畫面打開 App 後再按「從備份還原」。
+      </p>
+      <ol className={s.install} aria-label="安裝步驟">
+        {STEPS.map((st, i) => (
+          <li key={i} className={s.step}>
+            <span className={s.illo}>{st.art}</span>
+            <span className={s.stepText}>
+              <span className={`serif num ${s.stepNum}`}>{i + 1}</span>
+              <b>{st.title}</b>
+              <small>{st.sub}</small>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }

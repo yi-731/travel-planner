@@ -1,5 +1,5 @@
-import { motion, useDragControls, type PanInfo } from 'motion/react';
-import { useEffect, useId, type ReactNode } from 'react';
+import { motion, useDragControls, useIsPresent, type PanInfo } from 'motion/react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { useUI } from '@/store/ui';
 import { Icon } from './Icon';
 import s from './ui.module.css';
@@ -26,26 +26,62 @@ interface SheetProps {
  */
 export function Sheet({ title, eyebrow, children, footer, headerExtra, onClose, bare, ariaLabel }: SheetProps) {
   const closeSheet = useUI((st) => st.closeSheet);
-  const close = onClose ?? closeSheet;
+  // 正在滑出（已經關掉）的頁面不再回應：否則 Esc／點背景會多關掉一層，或讓表單跳出「還沒儲存」
+  const isPresent = useIsPresent();
+  const close = () => {
+    if (isPresent) (onClose ?? closeSheet)();
+  };
+  const latestClose = useRef(close);
+  latestClose.current = close;
   const controls = useDragControls();
   const labelId = useId();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  /** 背景淡入完成前不理會點背景：連點開啟按鈕時，第二下才不會把剛打開的頁面關掉 */
+  const scrimReady = useRef(false);
+
   // Esc 關閉（呼叫本頁的 onClose，表單可以先確認未儲存的變更）
   useEffect(() => {
+    if (!isPresent) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close();
+      if (e.key === 'Escape') latestClose.current();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [close]);
+  }, [isPresent]);
+
+  // 打開時把焦點移進彈出頁（VoiceOver 會唸出標題）。欄位自己 autoFocus 的就不搶；
+  // 也不主動聚焦第一個輸入框，以免一打開就跳出鍵盤
+  useEffect(() => {
+    const el = dialogRef.current;
+    if (el && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
+  }, []);
+
   const onDragEnd = (_: unknown, info: PanInfo) => {
     if (info.offset.y > 110 || info.velocity.y > 600) close();
   };
+  const exiting = isPresent ? undefined : { pointerEvents: 'none' as const };
   return (
     <>
-      <motion.div className={s.scrim} onClick={close} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.22 }} />
+      <motion.div
+        className={s.scrim}
+        style={exiting}
+        onClick={() => {
+          if (scrimReady.current) close();
+        }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.22 }}
+        onAnimationComplete={() => {
+          scrimReady.current = true;
+        }}
+      />
       <div className={s.sheetWrap}>
         <motion.div
+          ref={dialogRef}
           className={`${s.sheet} ${footer ? s.hasFoot : ''}`}
+          style={exiting}
+          tabIndex={-1}
           role="dialog"
           aria-modal="true"
           aria-label={ariaLabel}

@@ -7,18 +7,18 @@ import { useTripWeather } from '@/services/hooks';
 import { gmapsTraffic } from '@/services/links';
 import { useUI } from '@/store/ui';
 import { Icon, Tile } from '@/ui';
-import { fmtDistance, safeWeatherInfo, spendSummary, travelInfo, valueSizeClass, weatherSub } from './model';
+import { fmtDistance, safeWeatherInfo, spendSummary, travelTileKind, valueSizeClass, weatherSub } from './model';
 import s from './home.module.css';
 
 const SIZE = { md: '', sm: s.valSm, xs: s.valXs } as const;
 
-/** 首頁三張小卡：天氣、花費、移動 */
+/** 首頁三張小卡：天氣、花費、第三張依階段（出發前倒數／沒日期提醒設定／旅途中移動） */
 export function HomeTiles({ trip, phase, seg }: { trip: Trip; phase: TripPhase; seg: SegmentInfo | null }) {
   return (
     <div className={s.tiles}>
       <WeatherTile trip={trip} phase={phase} />
       <SpendTile trip={trip} phase={phase} />
-      <TravelTile seg={seg} />
+      <TravelTile phase={phase} seg={seg} />
     </div>
   );
 }
@@ -91,9 +91,36 @@ function SpendTile({ trip, phase }: { trip: Trip; phase: TripPhase }) {
   );
 }
 
-function TravelTile({ seg }: { seg: SegmentInfo | null }) {
+function TravelTile({ phase, seg }: { phase: TripPhase; seg: SegmentInfo | null }) {
   const openSheet = useUI((st) => st.openSheet);
-  const t = travelInfo(seg);
+  const t = travelTileKind(phase, seg);
+  if (t.kind === 'countdown')
+    return (
+      <Tile
+        label="倒數"
+        value={
+          t.daysUntil === 1 ? (
+            <span className={s.valWord}>明天</span>
+          ) : (
+            <>
+              {t.daysUntil}
+              <span className={s.unit}>天</span>
+            </>
+          )
+        }
+        sub={`共 ${t.tripDays} 天行程`}
+        onClick={() => openSheet({ name: 'tripSettings' })}
+      />
+    );
+  if (t.kind === 'setDates')
+    return (
+      <Tile
+        label="倒數"
+        value={<span className={s.valWord}>未定</span>}
+        sub="設定出發日"
+        onClick={() => openSheet({ name: 'tripSettings' })}
+      />
+    );
   if (t.kind === 'traffic')
     return (
       <Tile

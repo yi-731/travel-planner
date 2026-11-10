@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { durationWord } from '@/domain/constants';
+import { fmtDayNo } from '@/domain/dates';
 import type { Item } from '@/domain/types';
 import {
   dayCost,
+  dayOptionLabel,
   draftFromItem,
   draftToPatch,
   emptyDraft,
@@ -54,10 +57,14 @@ describe('eyebrow and money', () => {
     expect(fmtLocal(12800, 'JPY')).toBe('¥12,800');
     expect(fmtLocal(30, 'XYZ')).toBe('30 XYZ');
   });
+  it('labels day numbers the same way everywhere', () => {
+    expect(fmtDayNo(3)).toBe('第 3 天');
+    expect(dayOptionLabel(DAYS, '2026-11-21')).toBe('第 2 天 · 11/21（週六）');
+  });
   it('builds the eyebrow', () => {
     // 2026-11-21 是星期六
-    expect(planEyebrow(DAYS, '2026-11-21', [{ cost: 3000 }], 'JPY')).toBe('DAY 2 · 11/21（週六）· 預估 ¥3,000');
-    expect(planEyebrow(DAYS, '2026-11-21', [{}], 'JPY')).toBe('DAY 2 · 11/21（週六）');
+    expect(planEyebrow(DAYS, '2026-11-21', [{ cost: 3000 }], 'JPY')).toBe('第 2 天 · 11/21（週六）· 預估 ¥3,000');
+    expect(planEyebrow(DAYS, '2026-11-21', [{}], 'JPY')).toBe('第 2 天 · 11/21（週六）');
     expect(planEyebrow([], null, [], 'JPY')).toBe('尚未設定日期');
   });
 });
@@ -67,13 +74,21 @@ describe('segment line', () => {
   it('prefers AI estimate', () => {
     const l = segmentLine({ ...base, estimate: { minutes: 24.6, mode: '電車' }, leaveBy: 725 });
     expect(l.text).toBe('約 25 分 · 電車');
+    expect(l.hint).toBe(false);
     expect(l.icon).toBe('train');
     expect(l.leave).toBe('建議 12:05 出發');
   });
   it('falls back to distance and generic route', () => {
     expect(segmentLine({ ...base, distanceKm: 0.8 })).toMatchObject({ text: '直線 800 m', icon: 'walk' });
     expect(segmentLine({ ...base, distanceKm: 3.24 })).toMatchObject({ text: '直線 3.2 km', icon: 'train' });
-    expect(segmentLine(base)).toMatchObject({ text: '路線與路況', icon: 'navigate', warn: null, leave: null });
+    expect(segmentLine({ ...base, distanceKm: 0.8 }).hint).toBe(false);
+    expect(segmentLine(base)).toMatchObject({ text: '查路線', hint: true, icon: 'navigate', warn: null, leave: null });
+  });
+  it('calls a ride 需時 and everything else 停留', () => {
+    expect(durationWord('transport')).toBe('需時');
+    expect(durationWord('sight')).toBe('停留');
+    expect(durationWord('stay')).toBe('停留');
+    expect(durationWord(undefined)).toBe('停留');
   });
   it('flags tight timing', () => {
     expect(segmentLine({ ...base, tight: true }).warn).toBe('時間可能不夠');
@@ -138,6 +153,38 @@ describe('item form', () => {
     expect(p.geo).toBeUndefined();
     const same = draftToPatch(draftFromItem(orig), orig, () => null);
     expect(same.geo).toEqual(orig.geo);
+  });
+  describe('maps link in the 連結 field', () => {
+    const parse = (s: string) => {
+      const m = /@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/.exec(s);
+      return m ? { lat: +m[1], lng: +m[2] } : null;
+    };
+    const KIYO = 'https://www.google.com/maps/@34.9948,135.785,17z';
+    it('moves a geocoded pin when a maps link is pasted', () => {
+      const orig = item('a', { address: '京都市東山区', geo: { lat: 10, lng: 10, source: 'geocode' } });
+      const p = draftToPatch({ ...draftFromItem(orig), link: KIYO }, orig, parse);
+      expect(p.geo).toEqual({ lat: 34.9948, lng: 135.785, source: 'link' });
+    });
+    it('moves the pin when an old maps link is replaced by a new one', () => {
+      const orig = item('a', { link: 'https://www.google.com/maps/@1,2,17z', geo: { lat: 1, lng: 2, source: 'link' } });
+      const p = draftToPatch({ ...draftFromItem(orig), link: KIYO }, orig, parse);
+      expect(p.geo).toEqual({ lat: 34.9948, lng: 135.785, source: 'link' });
+    });
+    it('clears a pin that came from the old link when the link no longer has coordinates', () => {
+      const orig = item('a', { link: KIYO, geo: { lat: 34.9948, lng: 135.785, source: 'link' } });
+      expect(draftToPatch({ ...draftFromItem(orig), link: 'https://example.com/ticket' }, orig, parse).geo).toBeUndefined();
+      expect(draftToPatch({ ...draftFromItem(orig), link: '' }, orig, parse).geo).toBeUndefined();
+    });
+    it('keeps a pin from the address when only a non-maps link changes', () => {
+      const orig = item('a', { address: '京都市東山区', geo: { lat: 10, lng: 10, source: 'geocode' } });
+      const p = draftToPatch({ ...draftFromItem(orig), link: 'https://example.com/ticket' }, orig, parse);
+      expect(p.geo).toEqual(orig.geo);
+    });
+    it('still prefers a maps link pasted into 地址', () => {
+      const orig = item('a', { address: 'https://www.google.com/maps/@5,6,17z', geo: { lat: 5, lng: 6, source: 'link' } });
+      const p = draftToPatch({ ...draftFromItem(orig), link: KIYO }, orig, parse);
+      expect(p.geo).toEqual({ lat: 5, lng: 6, source: 'link' });
+    });
   });
   it('round-trips numbers and empties', () => {
     const orig = item('a', { durationMin: 90, cost: 500, rating: 4.5, time: '09:30' });

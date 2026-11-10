@@ -28,6 +28,7 @@
 .stats dt { font-size: var(--fs-xs); color: var(--night-muted); font-weight: 600; letter-spacing: 0.06em; }
 .stats dd { margin: 0; font-size: 24px; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .statBad { color: color-mix(in srgb, var(--bad) 70%, var(--night-ink)); }
+.statUnit { font-family: var(--f-ui); font-size: var(--fs-sm); font-weight: 600; letter-spacing: 0; color: var(--night-muted); margin-left: 3px; }
 
 /* ---------- 主要動作 ---------- */
 .actions { display: flex; gap: 10px; min-width: 0; }

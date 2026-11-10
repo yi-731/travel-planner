@@ -16,20 +16,34 @@ import type { Expense, ExpenseCategory, ISODate, Item, ItemType, Trip } from '@/
 /** 工作表名稱 → 二維陣列（第一列通常是標題） */
 export type RawSheets = Record<string, unknown[][]>;
 
+/**
+ * 匯入的花費：日期可以先空著（「第 N 天」或沒寫日期、又還不知道出發日），
+ * 由 applyImport 依行程的出發日換算（dayOffset 只在匯入過程中使用，不會存進 Expense）。
+ */
+export type DraftExpense = Omit<Expense, 'id' | 'createdAt' | 'updatedAt' | 'date' | 'fromSheet'> & {
+  date: ISODate | null;
+  /** 試算表寫的是「第 N 天」，等知道出發日再換算 */
+  dayOffset?: number;
+};
+
 export interface ImportResult {
   items: Omit<Item, 'id' | 'createdAt' | 'updatedAt'>[];
-  expenses: Omit<Expense, 'id' | 'createdAt' | 'updatedAt'>[];
+  expenses: DraftExpense[];
   warnings: string[];
   /** 偵測到「第 N 天」格式（需要出發日才能換算） */
   hasRelativeDays: boolean;
   /** 建議的新行程名稱（通常是檔名） */
   suggestedName: string;
+  /**
+   * 試算表裡有哪些欄位（行程表／記帳表分開）。「以試算表為準更新」時，
+   * 試算表沒有的欄位會保留 App 裡填的值。沒有這項（例如手動組出的結果）時，只在試算表的值是空的時候保留。
+   */
+  columns?: { items: ImportColumn[]; expenses: ImportColumn[] };
 }
 
 export type ImportMode = 'new' | 'append' | 'replace';
 
 type DraftItem = ImportResult['items'][number];
-type DraftExpense = ImportResult['expenses'][number];
 
 // ───────────────────────────── 讀檔 ─────────────────────────────
 
@@ -118,6 +132,8 @@ export function readPastedText(text: string): RawSheets {
 type Field =
   | 'date' | 'time' | 'title' | 'type' | 'address' | 'note' | 'cost'
   | 'link' | 'currency' | 'payer' | 'split' | 'duration' | 'rating';
+/** 試算表的欄位種類（ImportResult.columns 用） */
+export type ImportColumn = Field;
 
 /** 欄位別名。先比對完全相同，再比對「包含」（單字別名與標 exact 的只做完全比對） */
 const FIELD_ALIASES: [Field, string[]][] = [
@@ -162,16 +178,15 @@ function aliasEnd(header: string, alias: string): number {
   return k < 0 ? -1 : k + alias.length;
 }
 
-/** 一列標題 → 欄位對應（欄位 → 欄號） */
-function mapHeaderRow(row: unknown[]): Partial<Record<Field, number>> {
-  const map: Partial<Record<Field, number>> = {};
-  const headers = row.map(normHeader);
-  const taken = new Set<number>();
+type HeaderMap = Partial<Record<Field, number>>;
+
+/** 把還沒用到的欄位比對到別名：1) 完全相同 2) 包含（取結束位置最後、別名最長者） */
+function matchAliases(headers: string[], map: HeaderMap, taken: Set<number>, table: [Field, string[]][]) {
   // 1) 完全相同
   headers.forEach((h, col) => {
-    if (!h) return;
+    if (!h || taken.has(col)) return;
     const compact = h.replace(/\s/g, '');
-    for (const [field, aliases] of FIELD_ALIASES) {
+    for (const [field, aliases] of table) {
       if (map[field] !== undefined) continue;
       if (aliases.some((a) => a === h || a.replace(/\s/g, '') === compact)) {
         map[field] = col;
@@ -180,11 +195,11 @@ function mapHeaderRow(row: unknown[]): Partial<Record<Field, number>> {
       }
     }
   });
-  // 2) 包含（取結束位置最後、別名最長者）
+  // 2) 包含
   headers.forEach((h, col) => {
     if (!h || taken.has(col)) return;
     let best: { field: Field; end: number; len: number } | null = null;
-    for (const [field, aliases] of FIELD_ALIASES) {
+    for (const [field, aliases] of table) {
       if (map[field] !== undefined) continue;
       for (const a of aliases) {
         if (EXACT_ONLY.has(a) || a.length < 2) continue;
@@ -198,18 +213,59 @@ function mapHeaderRow(row: unknown[]): Partial<Record<Field, number>> {
       taken.add(col);
     }
   });
+}
+
+/** 一列標題 → 欄位對應（欄位 → 欄號） */
+function mapHeaderRow(row: unknown[]): HeaderMap {
+  const map: HeaderMap = {};
+  const headers = row.map(normHeader);
+  const taken = new Set<number>();
+  matchAliases(headers, map, taken, FIELD_ALIASES);
+  // 沒有名稱欄、只有「地點」欄（「日期｜時間｜地點｜備註」很常見）：地點就是行程名稱，
+  // 再從剩下的欄位找地址（「日期｜地點｜地址」→ 地點是名稱、地址是地址）
+  if (map.title === undefined && map.address !== undefined) {
+    map.title = map.address;
+    delete map.address;
+    matchAliases(headers, map, taken, FIELD_ALIASES.filter(([f]) => f === 'address'));
+  }
   return map;
 }
 
-function findHeader(rows: unknown[][]): { index: number; map: Partial<Record<Field, number>> } | null {
+interface HeaderRow {
+  index: number;
+  map: HeaderMap;
+  /** 標題列的原始文字（給提醒訊息用） */
+  labels: string[];
+}
+
+function findHeader(rows: unknown[][]): HeaderRow | null {
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
     const row = rows[i];
     if (!Array.isArray(row)) continue;
     const map = mapHeaderRow(row);
     const n = Object.keys(map).length;
-    if (n >= 2 && (map.title !== undefined || map.cost !== undefined)) return { index: i, map };
+    if (n >= 2 && (map.title !== undefined || map.cost !== undefined)) return { index: i, map, labels: row.map(cellText) };
   }
   return null;
+}
+
+/** 名稱欄寫「項目」「品項」：比較像記帳 */
+const EXPENSE_TITLE_WORDS = ['項目', '品項', 'item'];
+/** 名稱欄寫「行程」「景點」「活動」…：比較像行程表 */
+const ITEM_TITLE_WORDS = ['行程', '景點', '活動', 'spot', 'activity', 'name', '店名'];
+
+/**
+ * 沒有用工作表名稱標明時，依欄位判斷是不是記帳：
+ * 付款人、分攤各 2 分，幣別、名稱欄叫「項目」各 1 分；
+ * 時間、地址、停留、評分、連結、名稱欄叫「行程／景點」各 1 分。記帳分數較高才算記帳（同分算行程）。
+ */
+function sheetKind(map: HeaderMap, titleHeader: string): { expense: number; item: number } {
+  const has = (f: Field) => map[f] !== undefined;
+  const titleIs = (words: string[]) => !!titleHeader && words.some((w) => hasWord(titleHeader, w));
+  const expense = (has('payer') ? 2 : 0) + (has('split') ? 2 : 0) + (has('currency') ? 1 : 0) + (titleIs(EXPENSE_TITLE_WORDS) ? 1 : 0);
+  const item =
+    (['time', 'address', 'duration', 'rating', 'link'] as const).filter(has).length + (titleIs(ITEM_TITLE_WORDS) ? 1 : 0);
+  return { expense, item };
 }
 
 /** 工作表名稱看起來是記帳（「手帳」不算） */
@@ -246,15 +302,13 @@ function ymd(y: number, m: number, d: number): ISODate | null {
 
 /**
  * Date 物件 → 日期＋時刻（分鐘）。
- * read-excel-file 產生的是 UTC 為準的 Date（00:00Z 代表當天），所以用 UTC 欄位取值，
- * 不受手機時區影響；若剛好是「當地午夜」而非 UTC 午夜（程式自己建的 Date），改用當地欄位。
+ * 會遇到的 Date 都來自 read-excel-file（或 serialParts），一律以 UTC 為準：
+ * 儲存格「2026/11/21 16:00」就是 2026-11-21T16:00Z。所以只用 UTC 欄位取值，不受手機時區影響
+ * （不能用「當地午夜」判斷：台北的 16:00Z 剛好是當地午夜，會被誤認成隔天）。
  * 1899/1900 年代表「只有時間」的儲存格（Excel 時間序號 < 1）。
  */
 function dateObjParts(d: Date): { date: ISODate | null; minutes: number } | null {
   if (Number.isNaN(d.getTime())) return null;
-  const utcMidnight = d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0;
-  const localMidnight = d.getHours() === 0 && d.getMinutes() === 0 && d.getSeconds() === 0;
-  if (!utcMidnight && localMidnight) return { date: ymd(d.getFullYear(), d.getMonth() + 1, d.getDate()), minutes: 0 };
   const u = new Date(d.getTime() + 30_000); // 套件取整時會少幾毫秒（09:29:59.97），四捨五入到分鐘
   return {
     date: ymd(u.getUTCFullYear(), u.getUTCMonth() + 1, u.getUTCDate()),
@@ -476,7 +530,7 @@ function parseRating(v: unknown): number | null {
 
 const CURRENCY_WORDS: [RegExp, string][] = [
   [/NT\$|NTD|TWD|新?臺幣|新?台幣/i, 'TWD'],
-  [/JPY|日[幣圓元]|円/i, 'JPY'],
+  [/JPY|YEN|日[幣圓元]|円/i, 'JPY'],
   [/US\$|USD|美金|美元/i, 'USD'],
   [/KRW|韓[元幣圜]|₩/i, 'KRW'],
   [/HK\$|HKD|港[幣元]/i, 'HKD'],
@@ -488,12 +542,29 @@ const CURRENCY_WORDS: [RegExp, string][] = [
   [/VND|越南盾|₫/i, 'VND'],
 ];
 
-/** 幣別文字 → ISO 三碼；認不出來回傳 null */
+let isoCodes: Set<string> | null | undefined;
+/** 真的 ISO 4217 幣別代碼（瀏覽器不支援查詢時一律接受） */
+function isIsoCurrency(code: string): boolean {
+  if (isoCodes === undefined) {
+    try {
+      const list = Intl.supportedValuesOf?.('currency');
+      isoCodes = list?.length ? new Set(list) : null;
+    } catch {
+      isoCodes = null;
+    }
+  }
+  return isoCodes ? isoCodes.has(code) : true;
+}
+
+/** 幣別文字 → ISO 三碼；認不出來回傳 null。常見寫法（NTD、RMB、YEN、日幣…）先換成正式代碼 */
 function parseCurrency(v: unknown, local: string): string | null {
   const s = toHalfWidth(cellText(v)).trim();
   if (!s) return null;
-  if (/^[a-z]{3}$/i.test(s)) return s.toUpperCase();
   for (const [re, code] of CURRENCY_WORDS) if (re.test(s)) return code;
+  if (/^[a-z]{3}$/i.test(s)) {
+    const code = s.toUpperCase();
+    return isIsoCurrency(code) ? code : null;
+  }
   if (/[¥￥]/.test(s)) return local === 'CNY' ? 'CNY' : 'JPY';
   return null;
 }
@@ -551,10 +622,18 @@ function parseExpenseCategory(v: unknown): ExpenseCategory | null {
   return matchExpenseCategory(s);
 }
 
-function parseNames(v: unknown): string[] {
-  const s = cellText(v);
+/**
+ * 分攤者儲存格 → 名字清單（空陣列＝全員）。
+ * 有逗號、頓號、斜線等分隔符號時，每一段保持完整（「Amy Chen、Bob Lin」→ 兩個人）；
+ * 沒有分隔符號時才用空白分開（「小明 小華」），但整格剛好是已知的名字（付款人或成員）就不拆。
+ */
+function parseNames(v: unknown, known: ReadonlySet<string>): string[] {
+  const s = cellText(v).replace(/\s+/g, ' ').trim();
   if (!s || /^(全員|全部|所有人|大家|全體|all|everyone)$/i.test(s)) return [];
-  return [...new Set(s.split(/[,，、/／;；\s]+/).map((x) => x.trim()).filter(Boolean))];
+  const parts = s.split(/[,，、/／;；]+/).map((x) => x.trim()).filter(Boolean);
+  if (parts.length > 1) return [...new Set(parts)];
+  if (known.has(s)) return [s];
+  return [...new Set(s.split(' ').filter(Boolean))];
 }
 
 const looksLikeUrl = (s: string) => /^(https?:\/\/|www\.)\S+$/i.test(s);
@@ -567,12 +646,26 @@ const EXAMPLE_RE = /（範例）|\(範例\)/;
 // ───────────────────────────── 辨識 ─────────────────────────────
 
 /** 辨識欄位、正規化日期／時間／類型 */
-export function interpretSheets(raw: RawSheets, opts: { name: string; startDate?: string | null; localCurrency?: string }): ImportResult {
+export function interpretSheets(
+  raw: RawSheets,
+  opts: {
+    name: string;
+    startDate?: string | null;
+    localCurrency?: string;
+    /** 行程成員：分攤欄裡有空白的名字（「Amy Chen」）認得出是一個人 */
+    members?: readonly string[];
+  },
+): ImportResult {
   const startDate = opts.startDate || null;
   const local = (opts.localCurrency || 'JPY').toUpperCase();
   const items: DraftItem[] = [];
   const expenses: DraftExpense[] = [];
+  /** 每筆花費的分攤儲存格（全部讀完、知道有哪些付款人後再拆名字） */
+  const splitCells: unknown[] = [];
+  const itemColumns = new Set<Field>();
+  const expenseColumns = new Set<Field>();
   const skippedSheets: string[] = [];
+  const kindWarnings: string[] = [];
   let skippedNoTitle = 0;
   let skippedNoAmount = 0;
   let skippedExamples = 0;
@@ -580,7 +673,6 @@ export function interpretSheets(raw: RawSheets, opts: { name: string; startDate?
   let relResolved = false;
   let expenseNoDate = 0;
   let titleAbove = '';
-  const fallbackExpenseDate = startDate ?? today();
 
   for (const [sheetName, rowsIn] of Object.entries(raw ?? {})) {
     const rows = (Array.isArray(rowsIn) ? rowsIn : []).map((r) => (Array.isArray(r) ? r : []));
@@ -602,9 +694,21 @@ export function interpretSheets(raw: RawSheets, opts: { name: string; startDate?
         }
       }
     }
-    const isExpense =
-      isExpenseSheetName(sheetName) ||
-      (map.cost !== undefined && map.currency !== undefined && map.time === undefined && map.address === undefined);
+    // 記帳或行程：工作表名稱寫明的為準，否則看欄位
+    const titleLabel = map.title === undefined ? '' : (header.labels[map.title] ?? '');
+    const byName = isExpenseSheetName(sheetName);
+    const score = sheetKind(map, normHeader(titleLabel));
+    const isExpense = byName || (map.cost !== undefined && score.expense > score.item);
+    if (!byName) {
+      // 判斷可能錯的時候說一聲，不要默默匯入成另一種
+      const where = sheetName === '行程' ? '這張表' : `工作表「${sheetName}」`;
+      if (!isExpense && (map.payer !== undefined || map.split !== undefined)) {
+        kindWarnings.push(`${where}有付款人或分攤欄位，但看起來是行程表，已匯入成行程點。如果這是記帳，請放在名為「記帳」的工作表再匯入。`);
+      } else if (isExpense && titleLabel && sheetKind({}, normHeader(titleLabel)).item > 0) {
+        kindWarnings.push(`${where}有「${titleLabel}」欄，像是行程表，但因為有付款人、分攤或幣別欄位，已匯入成記帳。如果這是行程表，請拿掉這些欄位再匯入。`);
+      }
+    }
+    for (const f of Object.keys(map) as Field[]) (isExpense ? expenseColumns : itemColumns).add(f);
     const get = (row: unknown[], f: Field): unknown => (map[f] === undefined ? null : row[map[f]!]);
     const ctx: DateCtx = { startDate, anchor: null };
     let prev: DateParse | null = null;
@@ -649,19 +753,23 @@ export function interpretSheets(raw: RawSheets, opts: { name: string; startDate?
         }
         const category =
           parseExpenseCategory(get(row, 'type')) ?? matchExpenseCategory(title) ?? 'other';
-        if (!date) {
-          date = dayOffset ? addDays(fallbackExpenseDate, dayOffset - 1) : fallbackExpenseDate;
-          if (!dayOffset) expenseNoDate++;
+        // 沒寫日期：記在出發日；還不知道出發日就先空著，由 applyImport 依行程的出發日決定
+        if (!date && !dayOffset) {
+          expenseNoDate++;
+          date = startDate;
         }
-        expenses.push({
+        const e: DraftExpense = {
           date,
           title: title || EXPENSE_CATEGORIES.find((c) => c.key === category)!.label,
           amount,
           currency: parseCurrency(get(row, 'currency'), local) ?? parseCurrency(amountRaw, local) ?? local,
           category,
           payer: cellText(get(row, 'payer')),
-          split: parseNames(get(row, 'split')),
-        });
+          split: [],
+        };
+        if (dayOffset) e.dayOffset = dayOffset;
+        expenses.push(e);
+        splitCells.push(get(row, 'split'));
         continue;
       }
 
@@ -703,15 +811,22 @@ export function interpretSheets(raw: RawSheets, opts: { name: string; startDate?
     }
   }
 
+  // 分攤：付款人與成員的名字整格比對（名字裡可能有空白）
+  const known = new Set<string>([...(opts.members ?? []), ...expenses.map((e) => e.payer)].map((n) => n.replace(/\s+/g, ' ').trim()).filter(Boolean));
+  expenses.forEach((e, i) => {
+    e.split = parseNames(splitCells[i], known);
+  });
+
   const warnings: string[] = [];
   for (const s of skippedSheets) {
     warnings.push(`工作表「${s}」找不到欄位名稱列，已略過。第一列請寫上「日期」「行程」或「金額」等欄位名稱。`);
   }
+  warnings.push(...kindWarnings);
   if (relUnresolved) warnings.push('試算表用「第幾天」標示日期，設定出發日後就會換算成實際日期。');
   else if (relResolved && startDate) warnings.push(`已依出發日 ${fmtMD(startDate)} 把「第幾天」換算成日期。`);
   const noDate = items.filter((i) => !i.date && !i.dayOffset).length;
   if (noDate) warnings.push(`${noDate} 個行程點沒有日期，匯入後可以再幫它們排進某一天。`);
-  if (expenseNoDate) warnings.push(`${expenseNoDate} 筆花費沒有日期，先記在 ${fmtMD(fallbackExpenseDate)}。`);
+  if (expenseNoDate) warnings.push(`${expenseNoDate} 筆花費沒有日期，先記在${startDate ? ` ${fmtMD(startDate)}` : '出發日'}。`);
   if (skippedNoTitle) warnings.push(`${skippedNoTitle} 列沒有行程名稱，已略過。`);
   if (skippedNoAmount) warnings.push(`${skippedNoAmount} 列花費沒有金額，已略過。`);
   if (skippedExamples) warnings.push(`已略過 ${skippedExamples} 列範本的範例資料。`);
@@ -726,6 +841,7 @@ export function interpretSheets(raw: RawSheets, opts: { name: string; startDate?
     warnings,
     hasRelativeDays: relUnresolved,
     suggestedName: fileName || titleAbove || '匯入的行程',
+    columns: { items: [...itemColumns], expenses: [...expenseColumns] },
   };
 }
 
@@ -741,11 +857,125 @@ function widenDates(t: Trip) {
   if (!t.endDate || ds[ds.length - 1] > t.endDate) t.endDate = ds[ds.length - 1];
 }
 
+type KeepKey = 'time' | 'address' | 'link' | 'note' | 'cost' | 'durationMin' | 'rating';
+/** 行程點欄位 ↔ 試算表欄位：試算表沒有這一欄時，以試算表為準更新也保留 App 裡填的值 */
+const ITEM_KEEP: [KeepKey, Field][] = [
+  ['time', 'time'], ['address', 'address'], ['link', 'link'], ['note', 'note'],
+  ['cost', 'cost'], ['durationMin', 'duration'], ['rating', 'rating'],
+];
+
+/**
+ * 同一站：試算表的內容為準，但保留 id、完成狀態、座標（地址沒改時），
+ * 以及試算表沒有那一欄的資料（例如在 App 裡寫的備註、評分）。
+ * cols 是試算表有的欄位；不知道（null）時，只在試算表的值是空的時候保留。
+ */
+function mergeItem(old: Item, it: Item, cols: ReadonlySet<Field> | null): Item {
+  const merged: Item = { ...it, id: old.id, createdAt: old.createdAt, done: old.done || it.done };
+  const keep = <K extends KeepKey>(k: K) => {
+    merged[k] = old[k];
+  };
+  for (const [key, col] of ITEM_KEEP) {
+    // 試算表有這一欄、但格子是空的：照試算表（使用者在試算表清掉了）
+    if (merged[key] == null && old[key] != null && !cols?.has(col)) keep(key);
+  }
+  // 沒有類型欄時，類型是從名稱推測的：保留 App 裡改過的
+  if (cols && !cols.has('type')) merged.type = old.type;
+  const addressChanged = !!merged.address && normKey(merged.address) !== normKey(old.address);
+  if (!merged.geo && old.geo && !addressChanged) merged.geo = old.geo;
+  return merged;
+}
+
+/**
+ * 試算表的花費更新到原本那筆：保留 id、建立時間、收據照片；
+ * 試算表沒寫付款人、或沒有分攤／分類欄時，保留 App 裡的。
+ */
+function mergeExpense(old: Expense, e: Expense, src: DraftExpense, cols: ReadonlySet<Field> | null, now: number): Expense {
+  // App 裡記的（或舊版匯入、還沒有標記的）完全相同的花費：只加上標記，內容不動
+  if (!old.fromSheet) return { ...old, fromSheet: true };
+  const keepSplit = cols ? !cols.has('split') : !src.split.length;
+  const next: Expense = {
+    ...old,
+    date: e.date,
+    title: e.title,
+    amount: e.amount,
+    currency: e.currency,
+    category: cols && !cols.has('type') ? old.category : e.category,
+    payer: src.payer || old.payer,
+    split: keepSplit ? old.split : e.split,
+    fromSheet: true,
+  };
+  const changed =
+    (['date', 'title', 'amount', 'currency', 'category', 'payer'] as const).some((k) => next[k] !== old[k]) ||
+    next.split.join('\u0001') !== old.split.join('\u0001');
+  return changed ? { ...next, updatedAt: now } : old;
+}
+
+const exactKey = (e: Pick<Expense, 'date' | 'title' | 'amount' | 'currency'>) => `${e.date}|${normKey(e.title)}|${e.currency}|${e.amount}`;
+const looseKey = (e: Pick<Expense, 'date' | 'title'>) => `${e.date}|${normKey(e.title)}`;
+
+/**
+ * 以試算表為準更新花費：
+ *  1. 之前從試算表匯入的（fromSheet）：同日期＋名稱＋幣別＋金額是同一筆；
+ *     再來同日期＋名稱也算同一筆（試算表改了金額或幣別 → 更新原本那筆，不會多一筆）。
+ *  2. App 裡記的花費：完全相同的視為同一筆（舊版匯入的資料沒有標記），只加上標記、不重複加入。
+ *  3. 其他是新的花費。試算表裡已經沒有的「試算表花費」會移除；App 裡記的一律保留。
+ *     試算表完全沒有花費時（例如只有行程表）不移除任何花費，避免誤刪別處匯入的記帳。
+ */
+function replaceExpenses(t: Trip, incoming: Expense[], result: ImportResult, now: number): Expense[] {
+  const cols = result.columns ? new Set(result.columns.expenses) : null;
+  const sheetOld = t.expenses.filter((e) => e.fromSheet);
+  const appOld = t.expenses.filter((e) => !e.fromSheet);
+  const match: (Expense | undefined)[] = [];
+  const used = new Set<string>();
+  const pass = (pool: Expense[], key: (e: Expense) => string) =>
+    incoming.forEach((e, i) => {
+      if (match[i]) return;
+      const k = key(e);
+      const old = pool.find((o) => !used.has(o.id) && key(o) === k);
+      if (!old) return;
+      used.add(old.id);
+      match[i] = old;
+    });
+  pass(sheetOld, exactKey);
+  pass(sheetOld, looseKey);
+  pass(appOld, exactKey);
+
+  const updated = new Map<string, Expense>();
+  const added: Expense[] = [];
+  incoming.forEach((e, i) => {
+    const old = match[i];
+    if (old) updated.set(old.id, mergeExpense(old, e, result.expenses[i], cols, now));
+    else added.push(e);
+  });
+  const dropMissing = incoming.length > 0;
+  const kept = t.expenses.flatMap((o) => {
+    const u = updated.get(o.id);
+    if (u) return [u];
+    return o.fromSheet && dropMissing ? [] : [o];
+  });
+  return [...kept, ...added];
+}
+
+/**
+ * 以試算表為準更新後，原本的行程點與花費有哪些會被移除（給確認畫面、同步結果用；
+ * 例如「試算表裡沒有其中 3 個行程點（例如「二年坂」）、2 筆記帳，同步後會移除」）。
+ */
+export function replaceRemovals(
+  before: Pick<Trip, 'items' | 'expenses'>,
+  after: Pick<Trip, 'items' | 'expenses'>,
+): { items: Item[]; expenses: Expense[] } {
+  const items = new Set(after.items.map((i) => i.id));
+  const expenses = new Set(after.expenses.map((e) => e.id));
+  return { items: before.items.filter((i) => !items.has(i.id)), expenses: before.expenses.filter((e) => !expenses.has(e.id)) };
+}
+
 /**
  * 套用匯入結果：
  *  - new：建立新行程（回傳的 Trip 尚未寫入 store）
  *  - append：附加到 trip
- *  - replace：以試算表為準更新 trip 的行程點（保留已完成狀態與座標；花費只新增不重複的）
+ *  - replace：以試算表為準更新 trip（行程點：保留已完成狀態、座標與試算表沒有的欄位，試算表沒有的行程點移除；
+ *    花費：見 replaceExpenses）
+ * 花費沒有日期或寫「第 N 天」時，依行程的出發日換算（沒有出發日就用最早的行程點日期，再沒有才用今天）。
  */
 export function applyImport(base: Trip, result: ImportResult, mode: ImportMode): Trip {
   const now = Date.now();
@@ -769,13 +999,19 @@ export function applyImport(base: Trip, result: ImportResult, mode: ImportMode):
     else for (const n of names) if (!t.members.includes(n)) t.members.push(n);
   }
   const defaultPayer = t.members[0] ?? '我';
-  const expenses: Expense[] = result.expenses.map((e) => ({
-    ...structuredClone(e),
-    payer: e.payer || defaultPayer,
-    id: uid(),
-    createdAt: now,
-    updatedAt: now,
-  }));
+  const anchor = start ?? items.map((i) => i.date).filter((d): d is ISODate => !!d).sort()[0] ?? today();
+  const expenses: Expense[] = result.expenses.map((src) => {
+    const { dayOffset, ...e } = structuredClone(src);
+    return {
+      ...e,
+      date: e.date ?? addDays(anchor, (dayOffset ?? 1) - 1),
+      payer: e.payer || defaultPayer,
+      fromSheet: true,
+      id: uid(),
+      createdAt: now,
+      updatedAt: now,
+    };
+  });
 
   if (mode === 'new') {
     t.items = items;
@@ -785,7 +1021,8 @@ export function applyImport(base: Trip, result: ImportResult, mode: ImportMode):
     t.items = [...t.items, ...items];
     t.expenses = [...t.expenses, ...expenses];
   } else {
-    // replace：同日期＋同名稱（沒日期時只比名稱）視為同一站，保留 id、完成狀態與座標
+    // replace：同日期＋同名稱（沒日期時只比名稱）視為同一站
+    const cols = result.columns ? new Set(result.columns.items) : null;
     const used = new Set<string>();
     t.items = items.map((it) => {
       const old = t.items.find(
@@ -793,21 +1030,10 @@ export function applyImport(base: Trip, result: ImportResult, mode: ImportMode):
       );
       if (!old) return it;
       used.add(old.id);
-      const merged: Item = { ...it, id: old.id, createdAt: old.createdAt, done: old.done || it.done };
-      const addressChanged = !!it.address && normKey(it.address) !== normKey(old.address);
-      if (!merged.geo && old.geo && !addressChanged) merged.geo = old.geo;
-      return merged;
+      return mergeItem(old, it, cols);
     });
     t.ai = { ...t.ai, dayChecks: {} };
-    // 花費：同日期＋同名稱＋同金額已存在的不重複加入（數量也算：已有 1 筆、試算表 2 筆 → 加 1 筆）
-    const key = (e: Pick<Expense, 'date' | 'title' | 'amount'>) => `${e.date}|${normKey(e.title)}|${e.amount}`;
-    const have = new Map<string, number>();
-    for (const e of t.expenses) have.set(key(e), (have.get(key(e)) ?? 0) + 1);
-    for (const e of expenses) {
-      const n = have.get(key(e)) ?? 0;
-      if (n > 0) have.set(key(e), n - 1);
-      else t.expenses.push(e);
-    }
+    t.expenses = replaceExpenses(t, expenses, result, now);
   }
 
   widenDates(t);

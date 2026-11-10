@@ -7,7 +7,7 @@
 import { motion, useReducedMotion } from 'motion/react';
 import { useEffect, useMemo, useState } from 'react';
 import { itemType } from '@/domain/constants';
-import { today, tripDays } from '@/domain/dates';
+import { fmtDayNo, today, tripDays } from '@/domain/dates';
 import { daySegments, itemsOfDay, validDayCheck } from '@/domain/schedule';
 import type { ISODate, Trip } from '@/domain/types';
 import { useDayCheck } from '@/features/ai/useDayCheck';
@@ -86,33 +86,38 @@ function Plan({ trip }: { trip: Trip }) {
       {days.length > 0 && <DayStrip days={days} value={date} onChange={goTo} />}
 
       {(date || days.length === 0) && (
-        <div className={s.actions}>
-          <Button variant="go" icon="plus" onClick={add}>
-            新增
-          </Button>
-          {date && (
-            <>
-              <Button
-                variant="ghost"
-                icon={ai.busy ? undefined : 'spark'}
-                className={s.aiBtn}
-                disabled={ai.busy || !canCheck}
-                aria-label={canCheck ? 'AI 排程檢查' : 'AI 排程檢查（這天至少要有 2 個行程點）'}
-                onClick={() => void ai.run()}
-              >
-                {ai.busy ? (
-                  <>
-                    <Spinner /> 檢查中…
-                  </>
-                ) : (
-                  'AI 排程檢查'
+        <div className={s.actionsWrap}>
+          <div className={s.actions}>
+            <Button variant="go" icon="plus" onClick={add}>
+              新增
+            </Button>
+            {date && (
+              <>
+                {/* 少於 2 站時不放灰掉的按鈕，改在下面用一行字說明 */}
+                {(canCheck || ai.busy) && (
+                  <Button
+                    variant="ghost"
+                    icon={ai.busy ? undefined : 'spark'}
+                    className={s.aiBtn}
+                    disabled={ai.busy}
+                    onClick={() => void ai.run()}
+                  >
+                    {ai.busy ? (
+                      <>
+                        <Spinner /> 檢查中…
+                      </>
+                    ) : (
+                      'AI 排程檢查'
+                    )}
+                  </Button>
                 )}
-              </Button>
-              <Button variant="ghost" className={s.aiBtn} onClick={() => openSheet({ name: 'recommend', date })}>
-                AI 推薦
-              </Button>
-            </>
-          )}
+                <Button variant="ghost" icon="spark" className={s.aiBtn} onClick={() => openSheet({ name: 'recommend', date })}>
+                  AI 推薦
+                </Button>
+              </>
+            )}
+          </div>
+          {date && items.length === 1 && !ai.busy && <p className={s.actionHint}>再加 1 站就能用 AI 排程檢查</p>}
         </div>
       )}
 
@@ -161,9 +166,19 @@ function Plan({ trip }: { trip: Trip }) {
               initial={reduce || !dir ? false : { opacity: 0, x: dir * 36 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.28, ease: EASE }}
+              // 滑完就歸零：之後從別處換日期（例如表單儲存）不會沿用上一次的方向
+              onAnimationComplete={() => setDir(0)}
             >
               {items.length > 0 ? (
-                <Timeline tripId={trip.id} items={items} segs={segs} currency={trip.localCurrency} reduce={reduce || !!dir} />
+                <Timeline
+                  tripId={trip.id}
+                  items={items}
+                  segs={segs}
+                  currency={trip.localCurrency}
+                  reduce={reduce}
+                  // 換天滑入時整塊一起進來，卡片不再逐張浮現
+                  stagger={!reduce && !dir}
+                />
               ) : (
                 <DayEmpty hasDate={!!date} onAdd={add} onImport={() => openSheet({ name: 'import' })} />
               )}
@@ -190,7 +205,7 @@ function Plan({ trip }: { trip: Trip }) {
                 icon="clock"
                 iconColor={`var(${itemType(it.type).color})`}
                 title={it.title}
-                subtitle={[it.dayOffset ? `第 ${it.dayOffset} 天` : '尚未指定日期', it.time].filter(Boolean).join(' · ')}
+                subtitle={[it.dayOffset ? fmtDayNo(it.dayOffset) : '尚未指定日期', it.time].filter(Boolean).join(' · ')}
                 onClick={() => openSheet({ name: 'place', itemId: it.id })}
               />
             ))}
@@ -201,16 +216,19 @@ function Plan({ trip }: { trip: Trip }) {
   );
 }
 
+/** 空的一天：上面的動作列已經有「新增」，這裡只補匯入；完全沒有日期時兩個都放 */
 function DayEmpty({ hasDate, onAdd, onImport }: { hasDate: boolean; onAdd: () => void; onImport: () => void }) {
   return (
     <div className={s.empty}>
       <Empty icon="calendar" title={hasDate ? '這天還沒有安排' : '還沒有任何行程點'}>
-        {hasDate ? '新增第一站，或從試算表匯入整趟行程。' : '一站一站新增，或把行程試算表匯入進來。'}
+        {hasDate ? '用上面的「新增」加第一站，或從試算表匯入整趟行程。' : '一站一站新增，或把行程試算表匯入進來。'}
       </Empty>
       <div className={s.emptyActions}>
-        <Button variant="ghost" icon="plus" onClick={onAdd}>
-          新增行程點
-        </Button>
+        {!hasDate && (
+          <Button variant="ghost" icon="plus" onClick={onAdd}>
+            新增行程點
+          </Button>
+        )}
         <Button variant="ghost" icon="sheet" onClick={onImport}>
           匯入試算表
         </Button>

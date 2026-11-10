@@ -56,6 +56,8 @@ export interface Expense {
   split: string[];
   /** 收據照片（存在 IndexedDB 的 blob key） */
   receiptBlobKey?: string;
+  /** 從試算表匯入的（以試算表為準更新時，試算表刪掉的列會一起移除；App 裡記的不會） */
+  fromSheet?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -122,6 +124,11 @@ export interface Trip {
   /** 1 單位當地貨幣 = rate 單位本國貨幣 */
   rate: number;
   rateUpdatedAt?: number;
+  /**
+   * 其他幣別的匯率：1 單位該幣別 = N 單位本國貨幣（本國貨幣本身固定是 1，當地貨幣用上面的 rate）。
+   * 沒有匯率的幣別「尚未換算」，不算進總額與分帳（見 domain/money.ts）。
+   */
+  rates?: Record<string, number>;
   budget?: number;
   members: string[];
   items: Item[];
@@ -155,4 +162,6 @@ export interface Settings {
   reminders: boolean;
   reminderLeadMin: number;
   defaultHomeCurrency: string;
+  /** 上次「備份全部資料」成功的時間（ms）；沒備份過則沒有 */
+  lastBackupAt?: number;
 }

@@ -2,10 +2,12 @@
  * 行程設定：名稱、城市（自動定位）、航段、日期、幣別與匯率、預算、旅伴。
  * - 表單內容存在元件狀態，背景資料更新（天氣、匯率）不會洗掉正在輸入的內容。
  * - 有改動時關閉會先確認；儲存時城市有改就重新定位（失敗仍會儲存，並說明原因）。
+ * - 儲存中不能放棄修改；儲存完成時這頁已經不在最上層（或已關閉）就不再動彈出頁。
+ * - 改出發日且「跟著移動」開著：回程日一起移動（使用者沒自己改回程日時），行程天數不變。
  * - 套用規則（日期平移、「第 N 天」換算）在 ./model.ts，有測試。
  */
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { COMMON_CURRENCIES } from '@/domain/constants';
 import { fmtMoney } from '@/domain/money';
 import type { Trip } from '@/domain/types';
@@ -30,7 +32,8 @@ import {
   memberExpenseCount,
   parseDecimal,
   ratePreview,
-  shiftDaysFor,
+  shiftedEndDate,
+  shiftPlanFor,
   validateForm,
   type TripForm,
 } from './model';
@@ -75,8 +78,22 @@ function TripSettingsForm({ trip }: { trip: Trip }) {
   const [confirmClose, setConfirmClose] = useState(false);
   /** 儲存後定位失敗：留在這頁說明 */
   const [savedNote, setSavedNote] = useState<string | null>(null);
+  /** 儲存中按了關閉：提示會自動關閉 */
+  const [closeAsked, setCloseAsked] = useState(false);
+  /** 使用者自己改過回程日：改出發日時就不再自動移動回程日 */
+  const endEdited = useRef(false);
   const geoSeq = useRef(0);
   const rateSeq = useRef(0);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  /** 最新的表單內容（儲存等待定位時，用來判斷使用者有沒有又改了東西） */
+  const latest = useRef(f);
+  latest.current = f;
 
   const patch = (p: Partial<TripForm>) => {
     setF((prev) => ({ ...prev, ...p }));
@@ -89,11 +106,40 @@ function TripSettingsForm({ trip }: { trip: Trip }) {
   const firstError = Object.values(errors)[0];
   const dirty = formDirty(f, initial);
   const cityChanged = f.city.trim() !== trip.city.trim();
-  const shift = shiftDaysFor(trip, f.startDate);
+  const plan = shiftPlanFor(trip, f.startDate);
+  const shift = plan.days;
   const sameCurrency = f.localCurrency === f.homeCurrency;
   const rateNum = sameCurrency ? 1 : parseDecimal(f.rate);
   const preview = rateNum != null && Number.isFinite(rateNum) ? ratePreview(rateNum) : null;
   const currencies = currencyChoices(COMMON_CURRENCIES, f.localCurrency, f.homeCurrency, trip.localCurrency, trip.homeCurrency);
+
+  /* ---------- 背景查到匯率（例如新行程剛建立）：匯率欄位沒動過就跟著更新 ---------- */
+  useEffect(() => {
+    const next = fmtRateInput(trip.rate);
+    // 儲存中不動表單（存完會再檢查一次）
+    if (!next || saving) return;
+    const untouched = (a: TripForm, b: TripForm) =>
+      a.rate === b.rate && a.rateUpdatedAt === b.rateUpdatedAt && a.localCurrency === b.localCurrency && a.homeCurrency === b.homeCurrency;
+    if (!untouched(f, initial) || f.localCurrency !== trip.localCurrency || f.homeCurrency !== trip.homeCurrency) return;
+    if (f.rate === next && f.rateUpdatedAt === trip.rateUpdatedAt) return;
+    const synced = { rate: next, rateUpdatedAt: trip.rateUpdatedAt };
+    setInitial((prev) => ({ ...prev, ...synced }));
+    setF((prev) => ({ ...prev, ...synced }));
+    // 只在行程的匯率變了（或剛存完）時檢查；表單本身的變化不用
+  }, [trip.rate, trip.rateUpdatedAt, saving]);
+
+  /* ---------- 日期 ---------- */
+  const changeStart = (v: string) => {
+    const p: Partial<TripForm> = { startDate: v };
+    // 行程點跟著移動時，回程日也移動同樣天數（使用者自己改過回程日就不動）
+    if (!endEdited.current) p.endDate = shiftedEndDate(initial, v, f.shiftItems && shiftPlanFor(trip, v).days !== 0);
+    patch(p);
+  };
+  const changeShift = (on: boolean) => {
+    const p: Partial<TripForm> = { shiftItems: on };
+    if (!endEdited.current) p.endDate = shiftedEndDate(initial, f.startDate, on && shift !== 0);
+    patch(p);
+  };
 
   /* ---------- 城市定位 ---------- */
   async function lookupCity(city: string): Promise<GeoState> {
@@ -125,9 +171,12 @@ function TripSettingsForm({ trip }: { trip: Trip }) {
     try {
       const stored = useData.getState().trips[trip.id];
       // 幣別跟已儲存的一樣：用 refreshRate 一併寫回行程；改了幣別：先只查匯率，按儲存才寫入
-      const r = stored && stored.localCurrency === local && stored.homeCurrency === home ? await refreshRate(trip.id) : await fetchRate(local, home);
-      if (seq !== rateSeq.current) return;
-      setF((prev) => (prev.localCurrency === local && prev.homeCurrency === home ? { ...prev, rate: fmtRateInput(r), rateUpdatedAt: Date.now() } : prev));
+      const saved = !!stored && stored.localCurrency === local && stored.homeCurrency === home;
+      const r = saved ? await refreshRate(trip.id) : await fetchRate(local, home);
+      if (seq !== rateSeq.current || !alive.current) return;
+      // 已寫回行程的：用行程上的更新時間，儲存時就知道兩邊是同一個匯率
+      const at = (saved && useData.getState().trips[trip.id]?.rateUpdatedAt) || Date.now();
+      setF((prev) => (prev.localCurrency === local && prev.homeCurrency === home ? { ...prev, rate: fmtRateInput(r), rateUpdatedAt: at } : prev));
       setRateState({ status: 'idle' });
       void haptic('success');
     } catch (e) {
@@ -172,10 +221,16 @@ function TripSettingsForm({ trip }: { trip: Trip }) {
   /* ---------- 儲存／關閉 ---------- */
   async function save() {
     setTouched(true);
+    if (saving) return;
     if (firstError) {
       void haptic('warning');
       return;
     }
+    // 這一頁（彈出頁堆疊最上層）；儲存完只關這一頁，不會關到後來打開的別頁
+    const sheets = useUI.getState().sheets;
+    const mine = sheets[sheets.length - 1];
+    const snap = f;
+    const opened = initial;
     setSaving(true);
     let cityGeo: CityGeo | undefined;
     let note: string | null = null;
@@ -188,16 +243,35 @@ function TripSettingsForm({ trip }: { trip: Trip }) {
         note = `已儲存，但找不到「${city}」的位置，天氣和地圖會用不到。可以改成完整名稱或英文（例如 Osaka）再儲存一次。`;
       else if (res.status === 'error') note = `已儲存。${res.message}之後會自動再定位一次。`;
     }
-    useData.getState().mutateTrip(trip.id, (d) => applyForm(d, f, { cityGeo }));
-    setInitial(f);
+    // 等定位時這頁被關掉了（例如點了通知）：不寫入，也不動其他彈出頁
+    if (!alive.current) return;
+    useData.getState().mutateTrip(trip.id, (d) => applyForm(d, snap, { cityGeo, initial: opened }));
+    setInitial(snap);
     setSaving(false);
+    setCloseAsked(false);
     void haptic('success');
+    endEdited.current = false;
+    // 等定位時又改了內容：留在這頁，提醒再存一次
+    if (formDirty(latest.current, snap)) {
+      toast('已儲存。剛才等待時改的內容還沒存，請再按一次「儲存」。', 'good', 5000);
+      return;
+    }
     toast('已儲存', 'good');
-    if (note) setSavedNote(note);
-    else closeSheet();
+    if (note) {
+      setSavedNote(note);
+      return;
+    }
+    const now = useUI.getState().sheets;
+    if (now[now.length - 1] === mine) closeSheet();
   }
 
   const requestClose = () => {
+    if (saving) {
+      // 已經在儲存：不能放棄，存好會自動關閉
+      void haptic('warning');
+      setCloseAsked(true);
+      return;
+    }
     if (dirty && !savedNote && !confirmClose) {
       void haptic('warning');
       setConfirmClose(true);
@@ -232,9 +306,14 @@ function TripSettingsForm({ trip }: { trip: Trip }) {
     </Button>
   ) : (
     <>
-      {touched && firstError && (
+      {touched && firstError && !saving && (
         <p className={s.footError} role="alert">
           {firstError}
+        </p>
+      )}
+      {saving && closeAsked && (
+        <p className={s.footNote} role="status">
+          正在儲存，完成後會自動關閉。
         </p>
       )}
       <Button variant="go" block icon={saving ? undefined : 'check'} disabled={saving} onClick={() => void save()}>
@@ -299,17 +378,26 @@ function TripSettingsForm({ trip }: { trip: Trip }) {
       <section className={s.formSec} aria-labelledby="ts-dates">
         <h3 id="ts-dates" className={s.secTitle}>日期</h3>
         <Grid2>
-          <TextInput label="出發日" type="date" value={f.startDate} onChange={(e) => set('startDate', e.target.value)} />
-          <TextInput label="回程日" type="date" value={f.endDate} min={f.startDate || undefined} onChange={(e) => set('endDate', e.target.value)} />
+          <TextInput label="出發日" type="date" value={f.startDate} onChange={(e) => changeStart(e.target.value)} />
+          <TextInput
+            label="回程日"
+            type="date"
+            value={f.endDate}
+            min={f.startDate || undefined}
+            onChange={(e) => {
+              endEdited.current = true;
+              set('endDate', e.target.value);
+            }}
+          />
         </Grid2>
         {show('dates') && <p className={s.fieldError}>{errors.dates}</p>}
         {shift !== 0 && (
           <div className={s.switchRow}>
             <span className={s.switchText}>
-              <b>行程點跟著移動</b>
-              <small>所有排好日期的行程點一起{shift > 0 ? '往後' : '往前'} {Math.abs(shift)} 天</small>
+              <b>{shiftTitle(plan.items, plan.expenses)}</b>
+              <small>{shiftHint(plan.items, plan.expenses, shift, !!initial.endDate && !endEdited.current)}</small>
             </span>
-            <Switch checked={f.shiftItems} onChange={(v) => set('shiftItems', v)} label="行程點跟著出發日移動" />
+            <Switch checked={f.shiftItems} onChange={changeShift} label={`${shiftTitle(plan.items, plan.expenses)}（跟著出發日）`} />
           </div>
         )}
       </section>
@@ -431,6 +519,16 @@ function TripSettingsForm({ trip }: { trip: Trip }) {
       </section>
     </Sheet>
   );
+}
+
+const shiftTitle = (items: number, expenses: number) =>
+  items && expenses ? '行程點和記帳跟著移動' : expenses ? '記帳跟著移動' : '行程點跟著移動';
+
+/** 「5 個行程點、2 筆記帳和回程日一起往後 2 天」 */
+function shiftHint(items: number, expenses: number, days: number, withEnd: boolean): string {
+  const parts = [items ? `${items} 個行程點` : '', expenses ? `${expenses} 筆記帳` : '', withEnd ? '回程日' : ''].filter(Boolean);
+  const what = parts.length > 1 ? `${parts.slice(0, -1).join('、')}和${parts[parts.length - 1]}` : parts[0];
+  return `${what}一起${days > 0 ? '往後' : '往前'} ${Math.abs(days)} 天`;
 }
 
 function Located({ label }: { label: string }) {

@@ -5,7 +5,7 @@
 .go { background: var(--sel-bg); color: var(--sel-ink); padding: 5px 5px 5px 20px; gap: 14px; }
 .goIcon { width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; }
 .ghost { background: var(--surface); color: var(--ink); padding: 0 18px; box-shadow: inset 0 0 0 1px var(--line); }
-.soft { background: var(--accent-soft); color: var(--accent); padding: 0 18px; }
+.soft { background: var(--accent-soft); color: var(--accent-text); padding: 0 18px; }
 .plain { color: var(--ink-2); padding: 0 10px; min-height: 36px; }
 .danger { background: transparent; color: var(--bad); padding: 0 18px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 35%, transparent); }
 .accent { background: var(--accent); color: var(--accent-ink); padding: 0 20px; }
@@ -20,18 +20,27 @@
 .iconBtn:active { transform: scale(0.94); }
 
 /* ---------- Sheet ---------- */
-.scrim { position: fixed; inset: 0; z-index: 50; background: var(--scrim); }
-.sheetWrap { position: fixed; left: 0; right: 0; bottom: 0; z-index: 51; display: flex; justify-content: center; pointer-events: none; }
-.sheet { pointer-events: auto; width: 100%; max-width: var(--max-w); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 12px); background: var(--bg); border-radius: var(--r-xl) var(--r-xl) 0 0; display: flex; flex-direction: column; box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.18); overflow: hidden; }
+/* touch-action: none — 在背景上拖曳不會捲動後面的頁面（背景只用來點一下關閉） */
+.scrim { position: fixed; inset: 0; z-index: 50; background: var(--scrim); touch-action: none; }
+/* --kb／--vvh：網頁版鍵盤打開時由 app/useKeyboardInset 設定，把彈出頁抬到鍵盤上方 */
+.sheetWrap { position: fixed; left: 0; right: 0; bottom: var(--kb, 0px); z-index: 51; display: flex; justify-content: center; pointer-events: none; }
+.sheet { pointer-events: auto; width: 100%; max-width: var(--max-w); max-height: calc(var(--vvh, 100dvh) - env(safe-area-inset-top, 0px) - 12px); background: var(--bg); border-radius: var(--r-xl) var(--r-xl) 0 0; display: flex; flex-direction: column; box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.18); overflow: hidden; }
+/* 打開時焦點會移到整個彈出頁（給 VoiceOver），不要畫外框 */
+.sheet:focus, .sheet:focus-visible { outline: none; }
 .sheetHead { flex: none; padding: 8px var(--gutter-r) 6px var(--gutter); touch-action: none; cursor: grab; position: relative; }
 .grab { width: 40px; height: 5px; border-radius: 9px; background: var(--line-strong); margin: 0 auto 8px; }
 .sheetTitleRow { display: flex; align-items: flex-start; gap: 12px; min-height: 36px; }
 .sheetTitles { flex: 1; min-width: 0; display: grid; gap: 2px; padding-top: 2px; }
 .sheetTitle { font-size: var(--fs-2xl); font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; letter-spacing: -0.01em; }
-.sheetClose { flex: none; width: 34px; height: 34px; border-radius: 50%; background: var(--surface-3); display: grid; place-items: center; color: var(--ink-2); }
+.sheetClose { position: relative; flex: none; width: 34px; height: 34px; border-radius: 50%; background: var(--surface-3); display: grid; place-items: center; color: var(--ink-2); }
+/* 看起來 34px，可點範圍 44px */
+.sheetClose::after { content: ''; position: absolute; inset: -5px; border-radius: 50%; }
 .sheetBody { flex: 1; grid-auto-rows: max-content; grid-template-columns: minmax(0, 1fr); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 8px var(--gutter-r) calc(24px + env(safe-area-inset-bottom, 0px)) var(--gutter); display: grid; gap: 16px; align-content: start; }
 .sheetFoot { flex: none; padding: 10px var(--gutter-r) calc(12px + env(safe-area-inset-bottom, 0px)) var(--gutter); border-top: 1px solid var(--line); background: var(--bg-glass); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); display: grid; gap: 8px; }
 .sheetFoot + .sheetBody, .hasFoot .sheetBody { padding-bottom: 16px; }
+/* 鍵盤開著時底部是鍵盤，不是 Home 橫條：不用再留安全區 */
+:root[data-kb] .sheetFoot { padding-bottom: 12px; }
+:root[data-kb] .sheetBody:last-child { padding-bottom: 24px; }
 
 /* ---------- Orb ---------- */
 .orb { position: absolute; border-radius: 50%; pointer-events: none; background: radial-gradient(circle at 34% 30%, var(--orb-1) 0%, var(--orb-2) 34%, var(--orb-3) 66%, var(--orb-4) 100%); }
@@ -53,8 +62,9 @@
 /* ---------- Tile ---------- */
 .tile { background: var(--surface); border-radius: var(--r-md); box-shadow: var(--shadow-1); padding: 12px 12px 11px; text-align: left; display: grid; gap: 2px; min-width: 0; align-content: start; text-decoration: none; transition: transform var(--dur-1) var(--ease-out); }
 .tile:active { transform: scale(0.97); }
-.tileHot { background: linear-gradient(150deg, var(--orb-2), var(--orb-3) 70%); color: #fff; }
-.tileHot .tileLabel, .tileHot .tileSub { color: rgba(255, 255, 255, 0.86); }
+/* 淺橘底上白字只有 1.9:1，改用深色墨水（兩種主題的光球顏色相同） */
+.tileHot { background: linear-gradient(150deg, var(--orb-2), var(--orb-3) 70%); color: var(--orb-ink); }
+.tileHot .tileLabel, .tileHot .tileSub { color: color-mix(in srgb, var(--orb-ink) 80%, transparent); }
 .tileLabel { font-size: var(--fs-xs); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 4px; }
 .tileValue { font-family: var(--f-display); font-size: 30px; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .tileSub { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

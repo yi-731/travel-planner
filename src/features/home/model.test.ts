@@ -8,13 +8,16 @@ import {
   eyebrowText,
   fmtDistance,
   hasCJK,
+  isPastStop,
   leaveTone,
   pickNextStop,
   safeWeatherInfo,
   segmentInto,
+  showHomeTiles,
   spendSummary,
   startsIn,
   travelInfo,
+  travelTileKind,
   valueSizeClass,
   weatherSub,
 } from './model';
@@ -38,10 +41,10 @@ const exp = (date: string, amount: number, currency = 'TWD'): Expense => ({
 });
 
 describe('eyebrowText', () => {
-  it('依旅程階段顯示倒數、第幾天或結束', () => {
+  it('依旅程階段顯示出發日、第幾天或結束（倒數天數在小卡，不重複）', () => {
     const t = trip();
-    expect(eyebrowText(tripPhase(t, '2026-11-08'))).toBe('12 天後出發 · 11/20（週五）');
-    expect(eyebrowText(tripPhase(t, '2026-11-19'))).toBe('明天出發 · 11/20（週五）');
+    expect(eyebrowText(tripPhase(t, '2026-11-08'))).toBe('11/20（週五）出發');
+    expect(eyebrowText(tripPhase(t, '2026-11-19'))).toBe('11/20（週五）出發');
     expect(eyebrowText(tripPhase(t, '2026-11-22'))).toBe('DAY 3 / 5 · 11/22（週日）');
     expect(eyebrowText(tripPhase(t, '2026-12-01'))).toBe('旅程已結束');
     expect(eyebrowText(tripPhase(trip({ startDate: null, endDate: null }), '2026-11-08'))).toBe('尚未設定日期');
@@ -58,8 +61,11 @@ describe('城市名', () => {
     expect(hasCJK('서울')).toBe(true);
     expect(hasCJK('San Francisco')).toBe(false);
   });
-  it('拉丁文以最長的字計算縮放，中文以總字數', () => {
+  it('拉丁文 12 個字以內以整個名字計算（維持一行），更長的以最長的字計算；中文以總字數', () => {
     expect(cityFitLength('San Francisco')).toBe(9);
+    expect(cityFitLength('HONG KONG')).toBe(9);
+    expect(cityFitLength('  New   York ')).toBe(8);
+    expect(cityFitLength('Kyoto')).toBe(5);
     expect(cityFitLength('Rome')).toBe(4);
     expect(cityFitLength('京都')).toBe(2);
     expect(cityFitLength('首爾 特別市')).toBe(5);
@@ -76,6 +82,15 @@ describe('pickNextStop', () => {
     expect(pickNextStop('during', day, 8 * 60)?.item.id).toBe('a');
     expect(pickNextStop('during', day, 9 * 60 + 30)).toEqual({ item: day[0], status: 'now' });
     expect(pickNextStop('during', day, 11 * 60)?.item.id).toBe('b');
+  });
+  it('時間已過但還沒打勾：開始＋停留時間早於現在才算', () => {
+    expect(isPastStop(item('a', '08:10'), 10 * 60)).toBe(true);
+    expect(isPastStop(item('a', '09:00', { durationMin: 90 }), 10 * 60)).toBe(false);
+    expect(isPastStop(item('a', '09:00', { durationMin: 60 }), 10 * 60)).toBe(false);
+    expect(isPastStop(item('a', '09:00', { durationMin: 59 }), 10 * 60)).toBe(true);
+    expect(isPastStop(item('a', '16:30'), 10 * 60)).toBe(false);
+    expect(isPastStop(item('a', '08:10', { done: true }), 10 * 60)).toBe(false);
+    expect(isPastStop(item('a'), 23 * 60)).toBe(false);
   });
   it('跳過已完成；時間都過了就取第一個沒完成的', () => {
     const d2 = [{ ...day[0], done: true }, day[1], day[2]];
@@ -112,6 +127,20 @@ describe('移動資訊', () => {
     expect(travelInfo(seg({ estimate: { minutes: 24.6, mode: '地鐵' } }))).toMatchObject({ kind: 'estimate', minutes: 25, mode: '地鐵' });
     expect(travelInfo(seg({ distanceKm: 1.24 }))).toMatchObject({ kind: 'distance', km: 1.24 });
     expect(travelInfo(seg())).toMatchObject({ kind: 'route' });
+  });
+  it('第三張小卡依階段：出發前倒數、沒日期提醒設定、旅途中才看移動', () => {
+    const t = trip();
+    expect(travelTileKind(tripPhase(t, '2026-11-08'), null)).toEqual({ kind: 'countdown', daysUntil: 12, tripDays: 5 });
+    expect(travelTileKind(tripPhase(t, '2026-11-19'), seg())).toEqual({ kind: 'countdown', daysUntil: 1, tripDays: 5 });
+    expect(travelTileKind(tripPhase(trip({ startDate: null, endDate: null }), '2026-11-08'), null)).toEqual({ kind: 'setDates' });
+    expect(travelTileKind(tripPhase(t, '2026-11-21'), null)).toEqual({ kind: 'traffic' });
+    expect(travelTileKind(tripPhase(t, '2026-11-21'), seg({ distanceKm: 2 }))).toMatchObject({ kind: 'distance', km: 2 });
+  });
+  it('旅程結束後首頁不顯示小卡', () => {
+    expect(showHomeTiles('after')).toBe(false);
+    expect(showHomeTiles('before')).toBe(true);
+    expect(showHomeTiles('during')).toBe(true);
+    expect(showHomeTiles('none')).toBe(true);
   });
   it('距離格式', () => {
     expect(fmtDistance(0.853)).toEqual({ value: '850', unit: 'm' });

@@ -5,7 +5,7 @@
  * - 地址欄貼上 Google 地圖分享連結會直接定位（座標來源記為 link），地址文字照原樣保留。
  */
 import { useEffect, useId, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { ITEM_TYPES } from '@/domain/constants';
+import { durationWord, ITEM_TYPES } from '@/domain/constants';
 import { tripDays } from '@/domain/dates';
 import type { ISODate, Item, ItemType, LatLng, Trip } from '@/domain/types';
 import { haptic } from '@/platform';
@@ -274,7 +274,7 @@ function ItemForm({ trip, original, initialDate }: { trip: Trip; original: Item 
 
         <Grid2>
           <TextInput
-            label="停留分鐘"
+            label={`${durationWord(draft.type)}（分鐘）`}
             inputMode="numeric"
             placeholder="例如 90"
             value={draft.durationMin}

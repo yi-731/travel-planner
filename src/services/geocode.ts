@@ -102,12 +102,15 @@ export function placeQueries(it: Pick<Item, 'address' | 'title'>, city: string):
 }
 
 /** 已有座標的行程點的中位數位置（沒有城市座標時當作搜尋中心） */
-function itemsCenter(trip: Pick<Trip, 'items'>): LatLng | undefined {
+export function itemsCenter(trip: Pick<Trip, 'items'>): LatLng | undefined {
   const pts = trip.items.flatMap((i) => (i.geo ? [i.geo] : []));
   if (!pts.length) return undefined;
   const mid = (xs: number[]) => xs.sort((a, b) => a - b)[Math.floor(xs.length / 2)];
   return { lat: mid(pts.map((p) => p.lat)), lng: mid(pts.map((p) => p.lng)) };
 }
+
+/** 搜尋中心：城市座標，沒有就用已定位行程點的中位數（要傳完整的行程，不是只有待定位的那些） */
+export const searchCenter = (trip: Pick<Trip, 'cityGeo' | 'items'>): LatLng | undefined => trip.cityGeo ?? itemsCenter(trip);
 
 /** 這個行程點有沒有東西可以拿來定位 */
 export const canGeocode = (it: Pick<Item, 'geo' | 'address' | 'title' | 'link'>) =>
@@ -117,14 +120,16 @@ export const canGeocode = (it: Pick<Item, 'geo' | 'address' | 'title' | 'link'>)
  * 幫行程中還沒有座標的行程點補座標（節流：每秒最多 1 筆）。
  * 每找到一筆就呼叫 onResult，由呼叫端寫回 store。回傳成功筆數。
  * 先試 Google 地圖連結（不用連網），再依序查地址、名稱、名稱＋城市。
+ * opts.near：搜尋中心（只傳待定位的行程點時，用 searchCenter(完整行程) 算好傳進來）。
  * signal 取消時安靜停止並回傳目前的筆數；連線失敗時丟出中文錯誤（已找到的仍已透過 onResult 回報）。
  */
 export async function geocodeMissing(
   trip: Trip,
   onResult: (itemId: string, geo: LatLng) => void,
   signal?: AbortSignal,
+  opts?: { near?: LatLng },
 ): Promise<number> {
-  const near = trip.cityGeo ?? itemsCenter(trip);
+  const near = opts?.near ?? searchCenter(trip);
   const city = cityHint(trip);
   let ok = 0;
   let lastAt = 0;

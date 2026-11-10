@@ -152,16 +152,66 @@ export function validateForm(f: TripForm): FormErrors {
   return e;
 }
 
+type ShiftTrip = Pick<Trip, 'startDate' | 'endDate' | 'items' | 'expenses'>;
+
+/** 原本的行程期間（出發日～回程日；沒有回程日時到最後一個行程點） */
+function oldRange(trip: ShiftTrip): [ISODate, ISODate] | null {
+  if (!trip.startDate) return null;
+  const last = lastItemDate(trip.items);
+  let end = trip.endDate ?? (last && last > trip.startDate ? last : trip.startDate);
+  if (end < trip.startDate) end = trip.startDate;
+  return [trip.startDate, end];
+}
+
+const lastItemDate = (items: Trip['items']): ISODate | undefined =>
+  items
+    .map((i) => i.date)
+    .filter((x): x is string => !!x)
+    .sort()
+    .pop();
+
+export interface ShiftPlan {
+  /** 平移幾天（0 = 沒有東西要移） */
+  days: number;
+  /** 有日期的行程點數 */
+  items: number;
+  /** 在原本行程期間內的記帳筆數（期間外的不動） */
+  expenses: number;
+}
+
+/** 出發日從 trip.startDate 改到 next 時，要一起平移的行程點與記帳 */
+export function shiftPlanFor(trip: ShiftTrip, next: ISODate): ShiftPlan {
+  const none = { days: 0, items: 0, expenses: 0 };
+  if (!trip.startDate || !next || trip.startDate === next) return none;
+  const range = oldRange(trip);
+  const items = trip.items.filter((i) => i.date).length;
+  const expenses = range ? trip.expenses.filter((e) => e.date >= range[0] && e.date <= range[1]).length : 0;
+  if (!items && !expenses) return none;
+  return { days: diffDays(trip.startDate, next), items, expenses };
+}
+
 /** 出發日從 old 改到 next 時，行程點要平移幾天（沒有可平移的就回傳 0） */
-export function shiftDaysFor(trip: Pick<Trip, 'startDate' | 'items'>, next: ISODate): number {
-  if (!trip.startDate || !next || trip.startDate === next) return 0;
-  if (!trip.items.some((i) => i.date)) return 0;
-  return diffDays(trip.startDate, next);
+export function shiftDaysFor(trip: ShiftTrip, next: ISODate): number {
+  return shiftPlanFor(trip, next).days;
+}
+
+/**
+ * 改出發日時回程日的建議值：行程點跟著移動時，回程日也移動同樣天數（行程天數不變）。
+ * 沒有原本的出發日／回程日、或出發日清空時，維持原本的回程日。
+ */
+export function shiftedEndDate(initial: Pick<TripForm, 'startDate' | 'endDate'>, nextStart: ISODate, follow: boolean): ISODate {
+  if (!follow || !initial.startDate || !initial.endDate || !nextStart) return initial.endDate;
+  return addDays(initial.endDate, diffDays(initial.startDate, nextStart));
 }
 
 export interface ApplyContext {
   /** 城市有改時新的定位結果；undefined = 找不到或連線失敗（清掉舊座標，之後天氣會再自動定位） */
   cityGeo?: Trip['cityGeo'];
+  /**
+   * 表單打開時的值。匯率欄位沒動過時，不要用表單裡的舊匯率蓋掉背景剛查到的匯率
+   * （新行程先用 1，背景查到即時匯率才寫入）。
+   */
+  initial?: Pick<TripForm, 'rate' | 'rateUpdatedAt' | 'localCurrency' | 'homeCurrency'>;
 }
 
 /**
@@ -183,13 +233,21 @@ export function applyForm(d: Trip, f: TripForm, ctx: ApplyContext = {}): void {
   const start = f.startDate || null;
   const shift = f.shiftItems && start ? shiftDaysFor(d, start) : 0;
   if (shift) {
+    const range = oldRange(d);
     for (const it of d.items) if (it.date) it.date = addDays(it.date, shift);
+    // 原本行程期間內的記帳一起移動（出發前訂房、回國後的花費不動）
+    if (range) for (const e of d.expenses) if (e.date >= range[0] && e.date <= range[1]) e.date = addDays(e.date, shift);
     const checks: Trip['ai']['dayChecks'] = {};
     for (const [date, c] of Object.entries(d.ai.dayChecks)) checks[addDays(date, shift)] = c;
     d.ai.dayChecks = checks;
   }
   d.startDate = start;
   d.endDate = f.endDate || null;
+  if (shift && start) {
+    // 保險：回程日至少要涵蓋移動後的最後一個行程點（只往後延，不動出發日）
+    const last = lastItemDate(d.items);
+    if (last && last >= start && (!d.endDate || last > d.endDate)) d.endDate = last;
+  }
 
   if (start) {
     for (const it of d.items) {
@@ -207,10 +265,21 @@ export function applyForm(d: Trip, f: TripForm, ctx: ApplyContext = {}): void {
   const currencyChanged = d.localCurrency !== f.localCurrency || d.homeCurrency !== f.homeCurrency;
   d.localCurrency = f.localCurrency;
   d.homeCurrency = f.homeCurrency;
-  const rate = f.localCurrency === f.homeCurrency ? 1 : (parseDecimal(f.rate) ?? NaN);
-  if (Number.isFinite(rate) && rate > 0) {
-    if (rate !== d.rate || currencyChanged) d.rateUpdatedAt = f.rateUpdatedAt;
-    d.rate = rate;
+  if (f.localCurrency === f.homeCurrency) {
+    if (d.rate !== 1 || currencyChanged) d.rateUpdatedAt = f.rateUpdatedAt;
+    d.rate = 1;
+  } else {
+    const init = ctx.initial;
+    // 匯率欄位沒動過（或跟目前存的一樣）：保留行程上的匯率與更新時間，背景剛查到的即時匯率不會被表單的舊值蓋掉
+    const untouched =
+      !currencyChanged &&
+      (f.rate === fmtRateInput(d.rate) ||
+        (!!init && init.localCurrency === f.localCurrency && init.homeCurrency === f.homeCurrency && init.rate === f.rate && init.rateUpdatedAt === f.rateUpdatedAt));
+    const rate = parseDecimal(f.rate) ?? NaN;
+    if (!untouched && Number.isFinite(rate) && rate > 0) {
+      if (rate !== d.rate || currencyChanged) d.rateUpdatedAt = f.rateUpdatedAt;
+      d.rate = rate;
+    }
   }
   const budget = parseDecimal(f.budget);
   d.budget = budget != null && Number.isFinite(budget) && budget > 0 ? budget : undefined;
@@ -234,11 +303,18 @@ export function memberExpenseCount(trip: Pick<Trip, 'expenses'>, name: string): 
   return trip.expenses.filter((e) => e.payer === name || e.split.includes(name)).length;
 }
 
+/**
+ * 照片的 IndexedDB key（store/persist.ts 的 blobStore.put 產生，例如 'blob:lx3k9a2b7c'）。
+ * 照片和 App 資料存在同一個資料庫：不是這個格式的 key 一律不讀、不刪，
+ * 避免備份檔裡的假 key（例如 'travel-planner'）刪掉整份資料。
+ */
+export const isBlobKey = (k: unknown): k is string => typeof k === 'string' && /^blob:[a-z0-9]+$/.test(k);
+
 /** 刪除行程時可以清掉的照片（其他行程沒有用到的） */
 export function orphanBlobKeys(trip: Trip, others: Trip[]): string[] {
   const keys = new Set<string>();
-  if (trip.cover.kind === 'image' && trip.cover.blobKey) keys.add(trip.cover.blobKey);
-  for (const e of trip.expenses) if (e.receiptBlobKey) keys.add(e.receiptBlobKey);
+  if (trip.cover.kind === 'image' && isBlobKey(trip.cover.blobKey)) keys.add(trip.cover.blobKey);
+  for (const e of trip.expenses) if (isBlobKey(e.receiptBlobKey)) keys.add(e.receiptBlobKey);
   for (const o of others) {
     if (o.id === trip.id) continue;
     if (o.cover.blobKey) keys.delete(o.cover.blobKey);

@@ -3,7 +3,7 @@
  * 每個設定改了就立即存（沒有「儲存」按鈕），和 iOS 設定 App 一樣。
  */
 import { useState } from 'react';
-import { AI_MODELS, COMMON_CURRENCIES } from '@/domain/constants';
+import { AI_MODELS, aiCostHint, COMMON_CURRENCIES } from '@/domain/constants';
 import type { ThemePref } from '@/domain/types';
 import { haptic, isNative } from '@/platform';
 import { aiErrorMessage, resolveModel, testConnection } from '@/services/ai';
@@ -127,6 +127,7 @@ export default function AppSettingsSheet() {
 
           <Select
             label="模型"
+            hint={aiCostHint(model)}
             value={model}
             onChange={(e) => {
               updateSettings({ aiModel: e.target.value });
