@@ -18,6 +18,7 @@ export const SHEETS: Registry = {
   newTrip: lazy(() => import('@/features/trips/NewTripSheet')),
   tripSettings: lazy(() => import('@/features/more/TripSettingsSheet')),
   expenseForm: lazy(() => import('@/features/money/ExpenseFormSheet')),
+  settle: lazy(() => import('@/features/money/SettleSheet')),
   import: lazy(() => import('@/features/importer/ImportSheet')),
   appSettings: lazy(() => import('@/features/more/AppSettingsSheet')),
 };

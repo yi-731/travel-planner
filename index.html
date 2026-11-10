@@ -5,17 +5,72 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- default：主畫面網頁 App 的狀態列不透明，淺色時黑字、深色時白字，底色跟著下面的 theme-color（App.tsx 依主題更新）。
+         不用 black-translucent：那是固定白字，疊在淺色頂部列上看不清楚。改了要把主畫面的 App 刪掉重新加入才會生效。 -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="旅途手帳" />
     <meta name="theme-color" content="#ECEBE7" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#111113" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#0f0f11" media="(prefers-color-scheme: dark)" />
     <meta name="format-detection" content="telephone=no" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
+    <!-- apple-splash:start（由 scripts/ios-assets.mjs 產生，不要手改） -->
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-light-1320x2868.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-light-1206x2622.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 420px) and (device-height: 912px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-light-1260x2736.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-light-1290x2796.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-light-1179x2556.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-light-1170x2532.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-light-1284x2778.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-light-1125x2436.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-light-1242x2688.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="/apple-splash-portrait-light-828x1792.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-light-1242x2208.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="/apple-splash-portrait-light-750x1334.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-1320x2868.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-1206x2622.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 420px) and (device-height: 912px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-1260x2736.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-1290x2796.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-1179x2556.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-1170x2532.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-1284x2778.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-1125x2436.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-1242x2688.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-828x1792.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-1242x2208.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait) and (prefers-color-scheme: dark)" href="/apple-splash-portrait-dark-750x1334.png" />
+    <!-- apple-splash:end -->
     <title>旅途手帳</title>
   </head>
   <body>
     <div id="root"></div>
+    <!-- 保險：8 秒後畫面還是空的（程式載入失敗、資料庫一直沒回應），關掉原生 App 的啟動畫面並顯示說明，
+         不會一直卡在圖示。不依賴主程式，主程式壞掉也會執行；App 之後畫出來就自動移除。 -->
+    <script>
+      setTimeout(function () {
+        var c = window.Capacitor;
+        try {
+          if (c && typeof c.nativePromise === 'function') c.nativePromise('SplashScreen', 'hide', {}).catch(function () {});
+        } catch (e) {}
+        var root = document.getElementById('root');
+        if (!root || root.firstChild) return;
+        var box = document.createElement('div');
+        box.setAttribute('role', 'alert');
+        box.style.cssText = 'position:fixed;left:0;right:0;top:38%;padding:0 24px;text-align:center;font:17px/1.5 -apple-system,BlinkMacSystemFont,"PingFang TC",sans-serif';
+        box.innerHTML =
+          '<p style="margin:0 0 16px">載入的時間比平常久。<br>如果一直停在這裡，請按「重新載入」，<br>或從多工畫面把 App 滑掉再打開。</p>' +
+          '<button type="button" style="font:inherit;font-weight:600;min-height:44px;padding:0 24px;border-radius:22px;border:1.5px solid currentColor;background:none;color:inherit">重新載入</button>';
+        box.querySelector('button').onclick = function () {
+          location.reload();
+        };
+        document.body.appendChild(box);
+        new MutationObserver(function (_, observer) {
+          if (!root.firstChild) return;
+          box.remove();
+          observer.disconnect();
+        }).observe(root, { childList: true });
+      }, 8000);
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

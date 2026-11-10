@@ -21,7 +21,10 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt'：新版下載好後先等待、不在使用中途換掉（正在填的表單不會不見），
+      // 由 src/app/pwa.ts 跳出「有新版本」提示，下次完全關閉再打開 App 就是新版。
+      // 不要加 workbox.skipWaiting：開著的頁面會對不上新版的快取，切換畫面時可能載入失敗。
+      registerType: 'prompt',
       injectRegister: false,
       includeAssets: ['favicon.svg', 'apple-touch-icon-180x180.png'],
       manifest: {
@@ -44,16 +47,21 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        // iOS 啟動畫面只在加入主畫面時下載一次，不必放進離線快取（幾十張大圖）
+        globIgnores: ['**/apple-splash-*.png'],
         navigateFallback: 'index.html',
         runtimeCaching: [
           {
-            // 地圖圖磚：離線時也能看到看過的地圖
+            // 地圖圖磚：離線時也能看到看過的地圖。
+            // 圖磚用 CORS 載入（TripMap 的 crossOrigin），只存成功的 200 回應：
+            // 不透明回應（status 0）在瀏覽器的容量計算裡每張會被算成好幾 MB，而且看不出 403、5xx 等錯誤，會被當成正常圖磚存 30 天。
+            // 快取名稱改成 v2：舊的 'map-tiles' 存的是不透明回應，由 src/app/pwa.ts 刪除。
             urlPattern: /^https:\/\/tile\.openstreetmap\.org\/.*/,
             handler: 'CacheFirst',
             options: {
-              cacheName: 'map-tiles',
+              cacheName: 'map-tiles-v2',
               expiration: { maxEntries: 2000, maxAgeSeconds: 60 * 60 * 24 * 30 },
-              cacheableResponse: { statuses: [0, 200] },
+              cacheableResponse: { statuses: [200] },
             },
           },
           {

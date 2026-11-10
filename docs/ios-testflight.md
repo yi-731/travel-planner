@@ -2,6 +2,7 @@
 
 照著做一次，之後每次更新只要在 GitHub 按一個按鈕。全程**不需要 Mac**。
 預計時間：第一次約 1 小時（不含 Apple 審核開發者帳號的 1～2 天）。
+App 需要 **iOS 16.4 以上**的 iPhone，更舊的系統無法安裝。
 
 ## 費用總覽
 
@@ -115,6 +116,8 @@ Secrets 存進去後就看不到內容，只能覆寫；別人 fork 你的專案
 4. 收到邀請後在 TestFlight 按 **安裝**。之後每次上傳新建置，TestFlight 會通知你更新。
 
 > 出口合規（加密）問題：專案已在 `Info.plist` 設定 `ITSAppUsesNonExemptEncryption = NO`（只用 HTTPS），不會每次都被問。
+>
+> 隱私權清單：專案已附上 Apple 規定的 `ios/App/App/PrivacyInfo.xcprivacy`（Privacy Manifest），上傳時不會因為缺少 API 聲明被退回。
 
 ## 之後怎麼更新
 
@@ -138,11 +141,14 @@ TestFlight 給自己和朋友用就夠了（內部測試最多 100 人，外部�
 |---|---|
 | `缺少 Secrets：…` | 第 7 步少設了，或名稱打錯 |
 | `ASC_KEY_P8_BASE64 解不出 .p8 金鑰` | base64 文字不完整，重做第 6 步 |
-| `Cloud signing permission error`、`not authorized` | API 金鑰權限不是「管理」：撤銷後重新產生 Admin 金鑰，更新 3 個相關 Secrets |
+| `Cloud signing permission error`、`not authorized` | API 金鑰權限不是「管理」：撤銷後重新產生 Admin 金鑰，更新 `ASC_KEY_ID` 與 `ASC_KEY_P8_BASE64` 兩個 Secrets（Issuer ID 不變） |
+| `maximum number of certificates`、`reached the maximum number`、`private key is not installed` | 每次建置都在全新的雲端 Mac 上執行，Xcode 會自動建立一張新的開發憑證，累積太多就會被 Apple 拒絕。到 <https://developer.apple.com/account/resources/certificates/list>，把名稱含「Created via API」、類型為 Development 的舊憑證逐一按 **Revoke**（撤銷），再跑一次第 8 步。撤銷開發憑證不會影響已上傳的 TestFlight 建置 |
 | `No profiles for 'io.github.yi731.travelplanner' were found` | 第 3 步沒註冊 Bundle ID，或第 4 步選錯 Bundle ID |
 | `No Accounts`、`401`、`authentication` | `ASC_KEY_ID` 或 `ASC_ISSUER_ID` 填錯（Issuer ID 是表格上方那串，不是金鑰 ID） |
 | `The bundle version must be higher` | 同一個建置號重複了，直接再跑一次第 8 步 |
 | `SDK version issue`、`must be built with the iOS … SDK` | Apple 要求更新的 Xcode：把 `.github/workflows/ios-testflight.yml` 的 `runs-on: macos-15` 改成較新的 macOS（例如 `macos-26`） |
+| `ITMS-91053`、`Missing API declaration` | Apple 信裡會寫缺少哪一類 API（例如 `NSPrivacyAccessedAPICategoryUserDefaults`）和建議的原因代碼。打開 `ios/App/App/PrivacyInfo.xcprivacy`，在 `NSPrivacyAccessedAPITypes` 裡照現有的 `FileTimestamp` 那一段複製一份，換成信裡的類別與代碼，再跑一次第 8 步。之後新增原生外掛最容易遇到，外掛的 README 通常會寫要加哪一類 |
+| `封存的 App 裡沒有 PrivacyInfo.xcprivacy` | 隱私權清單檔被刪掉，或沒有加進 Xcode 專案：從 git 紀錄還原 `ios/App/App/PrivacyInfo.xcprivacy` 和 `ios/App/App.xcodeproj/project.pbxproj` |
 | `Missing required icon`、`Invalid large app icon` | 圖示有透明或尺寸不對：執行 `node scripts/ios-assets.mjs` 重新產生 |
 | `Your Apple Developer Program membership has expired` | 續費 Apple Developer Program |
 

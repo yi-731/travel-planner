@@ -86,7 +86,7 @@ jobs:
             printf '%s' "$ASC_KEY_P8_BASE64" | tr -d '\r\n ' | base64 --decode > "$KEY_PATH"
           fi
           if ! grep -q 'BEGIN PRIVATE KEY' "$KEY_PATH"; then
-            echo "::error::ASC_KEY_P8_BASE64 解不出 .p8 金鑰。請重新用 base64 轉換 AuthKey_XXXX.p8（見 docs/ios-testflight.md 第 3 步）。"
+            echo "::error::ASC_KEY_P8_BASE64 解不出 .p8 金鑰。請重新用 base64 轉換 AuthKey_XXXX.p8（見 docs/ios-testflight.md 第 6 步）。"
             exit 1
           fi
           chmod 600 "$KEY_PATH"
@@ -107,6 +107,14 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             CODE_SIGN_STYLE=Automatic
+
+      - name: 檢查隱私權清單
+        run: |
+          # Apple 要求 App 內附 PrivacyInfo.xcprivacy，少了會在上傳後收到 ITMS-91053 而無法送審
+          if [ ! -f "$ARCHIVE_PATH/Products/Applications/App.app/PrivacyInfo.xcprivacy" ]; then
+            echo "::error::封存的 App 裡沒有 PrivacyInfo.xcprivacy。請確認 ios/App/App/PrivacyInfo.xcprivacy 存在，且有加進 Xcode 專案的 Resources（見 docs/ios-testflight.md 疑難排解）。"
+            exit 1
+          fi
 
       - name: 匯出並上傳到 TestFlight
         run: |

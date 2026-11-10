@@ -17,7 +17,7 @@ import { weatherInfo } from '@/services/weather';
 import { useActiveTrip, useData } from '@/store';
 import { useUI } from '@/store/ui';
 import { Button, Chip, Empty, Icon, Orb, Sheet, type IconName } from '@/ui';
-import { fmtDuration, fmtRating, linkHost, normalizeUrl, placeMeta, ratingPct, timeRange } from './model';
+import { factsHint, fmtDuration, fmtRating, linkHost, normalizeUrl, placeMeta, placeSocials, ratingPct, timeRange } from './model';
 import s from './place.module.css';
 
 /** 服務還在開發或出錯時不要讓整頁壞掉 */
@@ -59,7 +59,6 @@ export default function PlaceSheet({ itemId }: { itemId: string }) {
 function PlaceBody({ trip, item, wx }: { trip: Trip; item: Item; wx: DailyWeather | undefined }) {
   const reduce = useReducedMotion();
   const openSheet = useUI((st) => st.openSheet);
-  const replaceSheet = useUI((st) => st.replaceSheet);
   const toast = useUI((st) => st.toast);
   const toggleDone = useData((st) => st.toggleDone);
 
@@ -76,6 +75,7 @@ function PlaceBody({ trip, item, wx }: { trip: Trip; item: Item; wx: DailyWeathe
   const cal = attempt(() => googleCalendar(trip, item), null);
 
   const meta = placeMeta(dayNo, item.date ? fmtMD(item.date) : '', item.date ? weekday(item.date) : '', item.time);
+  const socials = placeSocials(item.type, attempt(() => socialLinks(trip.cityGeo?.label || trip.city, item), []));
 
   const toggle = () => {
     const willBeDone = !item.done;
@@ -107,7 +107,8 @@ function PlaceBody({ trip, item, wx }: { trip: Trip; item: Item; wx: DailyWeathe
           <Button variant="go" block icon={item.done ? 'refresh' : 'check'} onClick={toggle}>
             {item.done ? '取消完成' : '標記完成'}
           </Button>
-          <Button variant="ghost" icon="edit" onClick={() => replaceSheet({ name: 'itemForm', itemId: item.id })}>
+          {/* 疊在地點頁上面，儲存或放棄後回到這裡 */}
+          <Button variant="ghost" icon="edit" onClick={() => openSheet({ name: 'itemForm', itemId: item.id })}>
             編輯
           </Button>
         </div>
@@ -170,20 +171,22 @@ function PlaceBody({ trip, item, wx }: { trip: Trip; item: Item; wx: DailyWeathe
         <Facts trip={trip} item={item} />
       </motion.div>
 
-      {/* 口碑與評價 */}
-      <motion.section className={s.section} aria-labelledby="place-social" {...enter(3)}>
-        <h3 id="place-social" className={s.secTitle}>
-          口碑與評價
-        </h3>
-        <div className={s.socials}>
-          {attempt(() => socialLinks(trip.cityGeo?.label || trip.city, item), []).map((l) => (
-            <a key={l.label} className={s.social} href={l.url} target="_blank" rel="noopener noreferrer" onClick={() => void haptic('light')}>
-              <span className={s.brandDot} style={{ background: l.color }} aria-hidden />
-              {l.label}
-            </a>
-          ))}
-        </div>
-      </motion.section>
+      {/* 口碑與評價（交通不顯示；住宿只留評價類，見 placeSocials） */}
+      {socials.length > 0 && (
+        <motion.section className={s.section} aria-labelledby="place-social" {...enter(3)}>
+          <h3 id="place-social" className={s.secTitle}>
+            口碑與評價
+          </h3>
+          <div className={s.socials}>
+            {socials.map((l) => (
+              <a key={l.label} className={s.social} href={l.url} target="_blank" rel="noopener noreferrer" onClick={() => void haptic('light')}>
+                <span className={s.brandDot} style={{ background: l.color }} aria-hidden />
+                {l.label}
+              </a>
+            ))}
+          </div>
+        </motion.section>
+      )}
     </Sheet>
   );
 }
@@ -268,7 +271,7 @@ interface Fact {
 
 function Facts({ trip, item }: { trip: Trip; item: Item }) {
   const toast = useUI((st) => st.toast);
-  const replaceSheet = useUI((st) => st.replaceSheet);
+  const openSheet = useUI((st) => st.openSheet);
 
   const copy = async (text: string) => {
     try {
@@ -294,17 +297,18 @@ function Facts({ trip, item }: { trip: Trip; item: Item }) {
       ),
     });
 
+  // 只有開始時間時，標題卡已經寫了，不再重複；有停留時間才多出結束時間與「停留 X」
   const range = timeRange(item);
   const stay = fmtDuration(item.durationMin);
-  if (range || stay)
+  if (stay)
     facts.push({
       key: 'time',
-      label: range && stay ? '時間 · 停留' : range ? '時間' : '停留',
+      label: range ? '時間 · 停留' : '停留',
       value: (
         <>
           {range && <span className="num">{range}</span>}
-          {range && stay && <span className={s.sep}> · </span>}
-          {stay && <span className={range ? s.soft : undefined}>停留 {stay}</span>}
+          {range && <span className={s.sep}> · </span>}
+          <span className={range ? s.soft : undefined}>停留 {stay}</span>
         </>
       ),
     });
@@ -370,8 +374,8 @@ function Facts({ trip, item }: { trip: Trip; item: Item }) {
   if (!facts.length)
     return (
       <div className={s.factsEmpty}>
-        <span>補上地址、時間或費用，導航和行程檢查會更準確。</span>
-        <Button variant="soft" size="sm" icon="edit" onClick={() => replaceSheet({ name: 'itemForm', itemId: item.id })}>
+        <span>{factsHint(item)}</span>
+        <Button variant="soft" size="sm" icon="edit" onClick={() => openSheet({ name: 'itemForm', itemId: item.id })}>
           補上資訊
         </Button>
       </div>

@@ -1,5 +1,5 @@
 /**
- * 記帳分頁：總覽卡（總花費／預算／今日・日均・剩餘）、記一筆／拍收據、分類、分帳結算、明細。
+ * 記帳分頁：總覽卡（總花費／預算／今日・日均・剩餘，出發前改成距出發・每天可花）、記一筆／拍收據、分類、分帳結算（只放轉帳摘要，表格在彈出頁）、明細。
  * 數字整理在 ./model.ts（有測試）；各區塊拆成獨立元件，方便日後調整。
  */
 import { useMemo } from 'react';
@@ -12,7 +12,7 @@ import { Button, Empty, LinkButton, PageHead, Spinner } from '@/ui';
 import { BankCard } from './BankCard';
 import { CategoryCard } from './CategoryCard';
 import { ExpenseList } from './ExpenseList';
-import { categorySlices, groupByDate, memberRows, rateLine, summarize } from './model';
+import { categorySlices, groupByDate, rateLine, summarize } from './model';
 import { SettleCard } from './SettleCard';
 import { pendingLabel, useReceiptScan } from './useReceiptScan';
 import s from './money.module.css';
@@ -37,7 +37,6 @@ function Money({ trip }: { trip: Trip }) {
   const groups = useMemo(() => groupByDate(trip), [trip]);
   const multi = trip.members.length > 1;
   const transfers = useMemo(() => (multi ? settle(trip) : []), [trip, multi]);
-  const rows = useMemo(() => (multi ? memberRows(trip) : []), [trip, multi]);
   const foreign = trip.localCurrency !== trip.homeCurrency;
   const count = trip.expenses.length;
 
@@ -92,7 +91,7 @@ function Money({ trip }: { trip: Trip }) {
       ) : (
         <>
           <CategoryCard slices={slices} currency={trip.homeCurrency} />
-          {multi && <SettleCard transfers={transfers} rows={rows} currency={trip.homeCurrency} />}
+          {multi && <SettleCard transfers={transfers} currency={trip.homeCurrency} />}
           <section className={s.section} aria-labelledby="money-list">
             <div className={s.secHead}>
               <h2 id="money-list" className={s.secTitle}>

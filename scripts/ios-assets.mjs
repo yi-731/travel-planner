@@ -4,6 +4,8 @@
 // 產生：
 //   ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png   1024×1024，無透明（App Store 規定）
 //   ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732*.png    淺色＋深色啟動畫面
+//   public/apple-splash-portrait-*.png                                   主畫面網頁 App（PWA）的啟動畫面，
+//                                                                        連結寫進 index.html
 // 需要 sharp（@vite-pwa/assets-generator 已附帶安裝）。
 import { createRequire } from 'node:module';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -91,3 +93,54 @@ const contents = {
 };
 writeFileSync(join(splashDir, 'Contents.json'), JSON.stringify(contents, null, 2) + '\n');
 console.log('✓ 啟動畫面（淺色＋深色）');
+
+// ---- 主畫面網頁 App（PWA）的啟動畫面 ----
+// iOS 的主畫面網頁 App 不會用 manifest 產生啟動畫面，要用 <link rel="apple-touch-startup-image">
+// 為每種螢幕尺寸各給一張，否則開啟時會先閃一下空白（深色模式特別明顯）。
+// 用和原生 App 一樣的圖，像 iOS「填滿」那樣裁成各機型的直式尺寸（App 只支援直式）。
+// 圖放在 public/apple-splash-*.png（不放進離線快取，見 vite.config.ts 的 globIgnores），
+// 連結自動寫進 index.html 的 apple-splash 標記之間。
+// 使用者要把主畫面的 App 刪掉再重新加入才會看到新圖；深淺色可能固定為加入時的外觀。
+const PWA_SPLASH = [
+  // [寬, 高（像素）, 倍率]：同尺寸的機型只列一次
+  [1320, 2868, 3], // iPhone 17 Pro Max、16 Pro Max
+  [1206, 2622, 3], // iPhone 17、17 Pro、16 Pro
+  [1260, 2736, 3], // iPhone Air
+  [1290, 2796, 3], // iPhone 16 Plus、15 Pro Max、15 Plus、14 Pro Max
+  [1179, 2556, 3], // iPhone 16、15、15 Pro、14 Pro
+  [1170, 2532, 3], // iPhone 16e、14、13、13 Pro、12、12 Pro
+  [1284, 2778, 3], // iPhone 14 Plus、13 Pro Max、12 Pro Max
+  [1125, 2436, 3], // iPhone 13 mini、12 mini、11 Pro、XS、X
+  [1242, 2688, 3], // iPhone 11 Pro Max、XS Max
+  [828, 1792, 2], // iPhone 11、XR
+  [1242, 2208, 3], // iPhone 8 Plus
+  [750, 1334, 2], // iPhone SE（第 2、3 代）、8
+];
+const publicDir = join(root, 'public');
+const links = [];
+for (const [name, theme] of [['light', LIGHT], ['dark', DARK]]) {
+  const square = await sharp(splashSvg(theme)).removeAlpha().png().toBuffer();
+  for (const [w, h, dpr] of PWA_SPLASH) {
+    const file = `apple-splash-portrait-${name}-${w}x${h}.png`;
+    await sharp(square)
+      .resize(w, h, { fit: 'cover', position: 'centre' })
+      .png({ compressionLevel: 9 })
+      .toFile(join(publicDir, file));
+    const scheme = name === 'dark' ? ' and (prefers-color-scheme: dark)' : '';
+    links.push(
+      `    <link rel="apple-touch-startup-image" media="screen and (device-width: ${w / dpr}px) and (device-height: ${h / dpr}px) and (-webkit-device-pixel-ratio: ${dpr}) and (orientation: portrait)${scheme}" href="/${file}" />`,
+    );
+  }
+}
+const htmlPath = join(root, 'index.html');
+const html = readFileSync(htmlPath, 'utf8');
+const START = '<!-- apple-splash:start（由 scripts/ios-assets.mjs 產生，不要手改） -->';
+const END = '<!-- apple-splash:end -->';
+const from = html.indexOf(START);
+const to = html.indexOf(END);
+if (from < 0 || to < from) {
+  console.error(`index.html 裡找不到啟動畫面標記，請在 <head> 裡加上：\n    ${START}\n    ${END}`);
+  process.exit(1);
+}
+writeFileSync(htmlPath, html.slice(0, from + START.length) + '\n' + links.join('\n') + '\n    ' + html.slice(to));
+console.log(`✓ 主畫面網頁 App 啟動畫面（${PWA_SPLASH.length} 種尺寸 × 淺色＋深色，已寫入 index.html）`);

@@ -2,7 +2,7 @@
  * 地點頁的純邏輯（不含 React）：時間、停留、費用、連結的顯示文字。
  */
 import { fromMinutes, toMinutes } from '@/domain/dates';
-import type { Item } from '@/domain/types';
+import type { Item, ItemType } from '@/domain/types';
 
 /** 90 → '1 小時 30 分'；45 → '45 分鐘'；120 → '2 小時' */
 export function fmtDuration(min: number | undefined | null): string {
@@ -63,4 +63,23 @@ export function placeMeta(dayNo: number, md: string, wd: string, time?: string):
   // 全形括號本身有留白，後面的分隔點不再加前置空格
   if (time) out += `${md && wd ? '· ' : ' · '}${time}`;
   return out;
+}
+
+/** 住宿只留查飯店時真的會看的來源（順序沿用 socialLinks） */
+const STAY_SOCIALS = new Set(['Google 評價', 'Instagram', 'Tripadvisor', 'Google 搜尋心得']);
+
+/**
+ * 地點頁「口碑與評價」依類型精簡：交通（航班、車次）不用查口碑 → 空陣列，整區不顯示；
+ * 住宿只留評價類；景點、美食、購物、其他維持完整清單。
+ * 只過濾、不改 socialLinks 本身，因為 AI 推薦頁也用同一份清單。
+ */
+export function placeSocials<T extends { label: string }>(type: ItemType, links: T[]): T[] {
+  if (type === 'transport') return [];
+  if (type === 'stay') return links.filter((l) => STAY_SOCIALS.has(l.label));
+  return links;
+}
+
+/** 沒有任何資訊時的提示；已經排了時間就不要再叫使用者「補上時間」 */
+export function factsHint(it: Pick<Item, 'time'>): string {
+  return toMinutes(it.time) != null ? '補上地址或停留時間，導航和行程檢查會更準確。' : '補上地址、時間或費用，導航和行程檢查會更準確。';
 }

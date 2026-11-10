@@ -344,12 +344,13 @@ function DayRow({ date, dayNo, wx, scale, isToday, selected, onPick }: DayRowPro
       {head}
       <span className={s.iconCol}>
         <Icon name={w.icon} size={22} stroke={1.9} />
-        {rain && <span className={`num ${s.rain}`}>{rain}</span>}
+        {rain && <span className={`num ${s.rain} ${wx.kind === 'climate' ? s.rainAvg : ''}`}>{rain}</span>}
       </span>
       <span className={s.mainCol}>
         <span className={s.labelLine}>
           <span className={s.wxLabel}>{w.label}</span>
-          <span className={`${s.kind} ${wx.kind === 'climate' ? s.kindClimate : ''}`}>{KIND_LABEL[wx.kind]}</span>
+          {/* 預報是常態，列表只標出「歷年平均」的日子；aria-label 仍會念出「預報」 */}
+          {wx.kind === 'climate' && <span className={`${s.kind} ${s.kindClimate}`}>{KIND_LABEL.climate}</span>}
         </span>
         <span className={s.temps}>
           <span className={`num ${s.tLo}`}>{lo}°</span>

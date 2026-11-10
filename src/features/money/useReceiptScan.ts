@@ -44,10 +44,10 @@ export function deliverReceipt(tripId: string, r: PendingReceipt): boolean {
   usePendingReceipts.setState({ [tripId]: r });
 
   const label = pendingLabel(r);
-  const what = r.fromAI ? '收據辨識好了' : '收據照片先幫你留著';
+  const what = r.fromAI ? '收據已辨識' : '收據照片先留著';
   const name = data.trips[tripId]?.name;
   ui.toast(
-    data.activeTripId === tripId || !name ? `${what}，回到記帳頁點「${label}」` : `「${name}」的${what}，切回這趟旅程後到記帳頁點「${label}」`,
+    data.activeTripId === tripId || !name ? `${what}，到記帳頁點「${label}」` : `「${name}」的${what}。切回這趟旅程後，到記帳頁點「${label}」`,
     'default',
     4200,
   );

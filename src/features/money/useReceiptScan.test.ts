@@ -91,7 +91,7 @@ describe('deliverReceipt', () => {
     expect(useUI.getState().sheets).toHaveLength(1);
     expect(useUI.getState().sheets[0]).not.toHaveProperty('prefill');
     expect(usePendingReceipts.getState().kyoto?.prefill.amount).toBe(1280);
-    expect(lastToast()).toBe('收據辨識好了，回到記帳頁點「查看辨識結果」');
+    expect(lastToast()).toBe('收據已辨識，到記帳頁點「查看辨識結果」');
 
     // 使用者關掉手上的表單，回記帳頁點按鈕
     useUI.getState().closeSheet();
@@ -105,7 +105,7 @@ describe('deliverReceipt', () => {
     expect(deliverReceipt('kyoto', { prefill: { receiptBlobKey: 'blob:a' }, fromAI: false })).toBe(false);
     expect(useUI.getState().sheets).toEqual([]);
     expect(Object.keys(usePendingReceipts.getState())).toEqual(['kyoto']);
-    expect(lastToast()).toBe('「京都」的收據照片先幫你留著，切回這趟旅程後到記帳頁點「填寫收據」');
+    expect(lastToast()).toBe('「京都」的收據照片先留著。切回這趟旅程後，到記帳頁點「填寫收據」');
   });
 
   it('同一趟又有新的在等：舊照片從手機清掉', async () => {

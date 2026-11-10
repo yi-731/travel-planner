@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { fmtDuration, fmtRating, linkHost, normalizeUrl, placeMeta, ratingPct, timeRange } from './model';
+import { socialLinks } from '@/services/links';
+import { factsHint, fmtDuration, fmtRating, linkHost, normalizeUrl, placeMeta, placeSocials, ratingPct, timeRange } from './model';
 
 describe('fmtDuration', () => {
   it('formats minutes and hours', () => {
@@ -64,5 +65,27 @@ describe('placeMeta', () => {
   it('handles undated items', () => {
     expect(placeMeta(0, '', '', '09:00')).toBe('還沒排日期 · 09:00');
     expect(placeMeta(0, '', '')).toBe('還沒排日期');
+  });
+});
+
+describe('placeSocials', () => {
+  const links = (type: Parameters<typeof socialLinks>[1]['type']) => socialLinks('京都', { title: '清水寺', type });
+  it('hides social links for transport', () => {
+    expect(placeSocials('transport', links('transport'))).toEqual([]);
+  });
+  it('keeps only review sources for stays', () => {
+    expect(placeSocials('stay', links('stay')).map((l) => l.label)).toEqual(['Google 評價', 'Instagram', 'Tripadvisor', 'Google 搜尋心得']);
+  });
+  it('keeps the full list for sights, food, shops and other', () => {
+    for (const type of ['sight', 'food', 'shop', 'other'] as const) expect(placeSocials(type, links(type))).toEqual(links(type));
+    expect(placeSocials('food', links('food')).some((l) => l.label.startsWith('Tabelog'))).toBe(true);
+  });
+});
+
+describe('factsHint', () => {
+  it('does not ask for a time that is already set', () => {
+    expect(factsHint({ time: '08:10' })).not.toContain('、時間');
+    expect(factsHint({ time: '08:10' })).toContain('停留時間');
+    expect(factsHint({})).toContain('地址、時間或費用');
   });
 });

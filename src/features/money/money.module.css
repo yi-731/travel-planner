@@ -65,6 +65,9 @@
 .balanced { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 14px; border-radius: var(--r-md); background: color-mix(in srgb, var(--good) 12%, transparent); color: var(--ink); font-weight: 600; font-size: var(--fs-md); }
 .balancedIcon { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--good); color: var(--surface); flex: none; }
 
+/* 卡片底部的「看更多」列：貼齊卡片左右與底邊 */
+.cardFoot { margin: -2px -16px -14px; border-top: 1px solid var(--line); border-radius: 0 0 var(--r-lg) var(--r-lg); overflow: hidden; }
+
 .table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); table-layout: fixed; }
 .table th, .table td { padding: 7px 0; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .table th:first-child { text-align: left; width: 28%; }

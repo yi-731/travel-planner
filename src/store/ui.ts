@@ -19,7 +19,8 @@ export type SheetRoute =
   | { name: 'tripSettings' }
   | { name: 'expenseForm'; expenseId?: string; prefill?: Partial<Expense>; /** prefill 來自 AI 收據辨識 */ fromAI?: boolean; /** 記在哪趟旅程（預設目前旅程） */ tripId?: string }
   | { name: 'import' }
-  | { name: 'appSettings' };
+  | { name: 'appSettings' }
+  | { name: 'settle' };
 
 export interface Toast {
   id: number;

@@ -4,7 +4,8 @@
  * 改了 logo.svg 之後執行：npm run icons
  * 會在 public/ 產生：pwa-64x64.png、pwa-192x192.png、pwa-512x512.png、
  * maskable-icon-512x512.png、apple-touch-icon-180x180.png、favicon.ico
- * （iOS 原生 App 的 1024 圖示另外用 node scripts/ios-assets.mjs 產生）
+ * （iOS 原生 App 的 1024 圖示與啟動畫面，以及主畫面網頁 App 的啟動畫面 public/apple-splash-*.png，
+ *   另外用 node scripts/ios-assets.mjs 產生：和原生 App 同一張圖，不是由這裡的 logo.svg 縮放）
  */
 import { defineConfig, minimal2023Preset } from '@vite-pwa/assets-generator/config';
 

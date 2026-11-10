@@ -80,6 +80,8 @@ button.row:active { background: var(--surface-2); }
 .isToday .dayName { color: var(--accent-text); }
 .iconCol { display: grid; justify-items: center; gap: 2px; color: var(--ink-2); }
 .rain { font-size: 11px; font-weight: 700; color: var(--info); line-height: 1; white-space: nowrap; }
+/* 歷年平均的是雨量（mm），不是降雨機率：用灰字和預報的藍色百分比區分 */
+.rainAvg { color: var(--muted); }
 .noIcon { color: var(--faint); }
 .noData { font-size: var(--fs-sm); color: var(--muted); }
 .mainCol { display: grid; gap: 7px; min-width: 0; }

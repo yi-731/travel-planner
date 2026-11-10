@@ -1,6 +1,7 @@
 /**
  * 新增行程：名稱、城市、日期、幣別。上方預覽卡即時呈現首頁大字的樣子。
  * 建立後立即關閉並回到首頁；城市定位與匯率在背景補上（enrich.ts）。
+ * 填了東西後誤點背景／往下滑，先在底部問一次要不要放棄，不直接丟掉。
  */
 import { useId, useMemo, useState } from 'react';
 import { diffDays } from '@/domain/dates';
@@ -24,12 +25,30 @@ export default function NewTripSheet() {
   const [localTouched, setLocalTouched] = useState(false);
   const [home, setHome] = useState(defaultHome);
   const [nameError, setNameError] = useState(false);
+  const [askDiscard, setAskDiscard] = useState(false);
 
   const codes = useMemo(() => currencyList([local, home]), [local, home]);
   const dateError = !!start && !!end && end < start;
+  // 城市帶出的當地貨幣跟著 city 算；手動改過貨幣才看 localTouched
+  const dirty = !!(name.trim() || city.trim() || start || end || localTouched || home !== defaultHome);
+
+  /** 又動了欄位：收起「要放棄嗎？」，回到「建立」 */
+  const edited = () => {
+    if (askDiscard) setAskDiscard(false);
+  };
+
+  const close = () => {
+    if (dirty && !askDiscard) {
+      void haptic('warning');
+      setAskDiscard(true);
+      return;
+    }
+    useUI.getState().closeSheet();
+  };
 
   const onCity = (v: string) => {
     setCity(v);
+    edited();
     if (localTouched) return;
     // 認得的城市（KYOTO、首爾、Paris…）自動帶入當地貨幣；使用者手動改過就不再動
     const cur = currencyForCountry(findCityAlias(v.trim())?.cc);
@@ -38,6 +57,7 @@ export default function NewTripSheet() {
 
   const onStart = (v: string) => {
     setStart(v);
+    edited();
     if (v && end && end < v) setEnd(v);
   };
 
@@ -74,10 +94,27 @@ export default function NewTripSheet() {
   return (
     <Sheet
       title="要去哪裡？"
+      onClose={close}
       footer={
-        <Button variant="go" block onClick={create}>
-          建立
-        </Button>
+        askDiscard ? (
+          <div className={s.discard}>
+            <div className={s.discardText} role="alert">
+              還沒建立，要放棄這趟行程嗎？
+            </div>
+            <div className={s.footRow}>
+              <Button variant="ghost" onClick={() => setAskDiscard(false)}>
+                繼續填寫
+              </Button>
+              <Button variant="danger" onClick={() => useUI.getState().closeSheet()}>
+                放棄
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button variant="go" block onClick={create}>
+            建立
+          </Button>
+        )
       }
     >
       <Preview name={name} city={city} start={start} end={end} local={local} home={home} />
@@ -92,6 +129,7 @@ export default function NewTripSheet() {
         hint={nameError ? <span className={s.err}>請輸入行程名稱，之後也可以再改。</span> : undefined}
         onChange={(e) => {
           setName(e.target.value);
+          edited();
           if (e.target.value.trim()) setNameError(false);
         }}
       />
@@ -113,7 +151,10 @@ export default function NewTripSheet() {
           value={end}
           min={start || undefined}
           aria-invalid={dateError || undefined}
-          onChange={(e) => setEnd(e.target.value)}
+          onChange={(e) => {
+            setEnd(e.target.value);
+            edited();
+          }}
         />
       </Grid2>
       {dateError && <p className={s.errLine} role="alert">回程日比出發日早，請重新選擇回程日。</p>}
@@ -124,6 +165,7 @@ export default function NewTripSheet() {
           onChange={(e) => {
             setLocal(e.target.value);
             setLocalTouched(true);
+            edited();
           }}
         >
           {codes.map((c) => (
@@ -132,7 +174,14 @@ export default function NewTripSheet() {
             </option>
           ))}
         </Select>
-        <Select label="本國貨幣" value={home} onChange={(e) => setHome(e.target.value)}>
+        <Select
+          label="本國貨幣"
+          value={home}
+          onChange={(e) => {
+            setHome(e.target.value);
+            edited();
+          }}
+        >
           {codes.map((c) => (
             <option key={c} value={c}>
               {currencyLabel(c)}

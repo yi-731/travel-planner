@@ -31,11 +31,13 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>拍攝收據以自動記帳</string>
+	<string>拍收據自動記帳，或拍一張照片當行程封面</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>在地圖上顯示你的位置並導航</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>在地圖上顯示你的位置並導航</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>儲存匯出的檔案</string>
+	<string>將照片儲存到你的照片圖庫</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>選擇收據或封面照片</string>
 	<key>UIApplicationSceneManifest</key>

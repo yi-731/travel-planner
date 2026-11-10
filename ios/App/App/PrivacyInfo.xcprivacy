@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  隱私權清單（Privacy Manifest）：上傳 App Store Connect／TestFlight 必須附上，否則會收到
+  ITMS-91053 Missing API declaration。
+  - 不追蹤使用者、不收集資料（行程、記帳都只存在裝置）。
+  - 檔案時間戳記（FileTimestamp）：@capacitor/filesystem 會讀檔案的建立／修改時間；
+    本 App 只讀寫自己 App 容器內的檔案（匯出檔先存到快取資料夾再分享），對應原因 C617.1。
+  之後新增原生外掛時，先看該外掛 README 的 Privacy Manifest 說明，把要求的 API 類別加進
+  NSPrivacyAccessedAPITypes。
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

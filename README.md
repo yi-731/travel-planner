@@ -18,7 +18,8 @@
 | | PWA（網頁 App） | 原生 iOS App |
 |---|---|---|
 | 費用 | **免費** | Apple Developer Program **每年 USD 99** |
-| 安裝方式 | Safari →「加入主畫面」 | TestFlight（之後可上架 App Store） |
+| 安裝方式 | Safari →「⋯」→「分享」→「加入主畫面」 | TestFlight（之後可上架 App Store） |
+| 系統需求 | iOS 16.4 以上 | iOS 16.4 以上 |
 | 更新 | push 程式碼後約 2 分鐘自動上線 | 在 GitHub 按一次按鈕，約 30 分鐘後到 TestFlight |
 | 觸覺回饋、出發提醒通知 | 不支援（Safari 限制） | 支援 |
 | 需要 Mac 嗎 | 不需要 | 不需要（由 GitHub 雲端的 Mac 建置） |
@@ -39,9 +40,11 @@
 
 ## 2. 安裝到 iPhone（PWA）
 
-1. 用 iPhone 的 **Safari** 打開上面的網址（一定要用 Safari，Chrome 不行）。
-2. 點下方的 **分享** 按鈕（方框加向上箭頭）。
-3. 往下滑，點 **加入主畫面** → 右上角 **加入**。
+需要 iOS 16.4 以上（設定 → 一般 → 關於本機 →「iOS 版本」），更舊的系統無法使用。
+
+1. 用 iPhone 的 **Safari** 打開上面的網址（建議用 Safari；iOS 16.4 以上的 Chrome、Edge 也可以從分享選單加入）。
+2. 點網址列旁的 **⋯** → **分享**（iOS 18 以前：直接點下方的分享按鈕，方框加向上箭頭）。
+3. 往下滑點 **加入主畫面**（沒看到就點更多選項），確認「網頁 App」的開關是開著的（預設就是開的），再按右上角 **加入**。
 4. 從主畫面的「旅途手帳」圖示打開，就會像一般 App 一樣全螢幕使用，離線也能看行程。
 
 > 資料存在 Safari 的這個 App 裡。如果刪掉主畫面圖示，或在「設定 → Safari → 清除瀏覽紀錄和網站資料」，資料會一起清掉。
@@ -50,20 +53,21 @@
 ## 3. 日常更新流程
 
 ```
-改程式 → git push 到 main → 約 2 分鐘自動上線 → 手機重開 App 即更新
+改程式 → git push 到 main → 約 2 分鐘自動上線 → 打開 App 會提示有新版 → 從多工畫面滑掉再開即更新
 ```
 
 1. 在電腦修改程式（或請 AI 助手修改，見下方「如何修改」）。
 2. 確認沒有錯誤：`npm run typecheck`、`npm test`。
 3. `git add -A && git commit -m "說明這次改了什麼" && git push`
 4. GitHub 會自動：檢查（CI）→ 建置 → 發布。到 **Actions** 分頁可以看進度，紅色叉叉代表失敗，點進去看錯誤訊息。
-5. iPhone 上：從多工畫面把 App 滑掉，再重新打開。App 會在背景下載新版，有時要再重開一次才會看到。
+5. iPhone 上：打開 App（或從背景切回來）時，App 會在背景下載新版，下載好會跳出「有新版本」提示。這時從多工畫面把 App 滑掉，再重新打開就是新版。
+   新版不會在使用中途突然換掉，正在填的表單不會不見。
 
-原生 App 的更新見下一節第 5 步。
+原生 App 的更新：到 GitHub 專案的 Actions 再跑一次「iOS 上傳 TestFlight」（見下一節「建置並上傳」）。
 
 ## 4. 原生 iOS App／TestFlight
 
-詳細圖文步驟：[docs/ios-testflight.md](docs/ios-testflight.md)。
+詳細圖文步驟：[docs/ios-testflight.md](docs/ios-testflight.md)。需要 iOS 16.4 以上的 iPhone。
 
 ### 費用
 
@@ -174,13 +178,13 @@ scripts/       開發用小工具
 | `npm test` | 單元測試 |
 | `npm run build` | 建置正式版到 `dist/` |
 | `npm run icons` | 由 `public/logo.svg` 產生 PWA 圖示 |
-| `node scripts/ios-assets.mjs` | 由 `public/logo.svg` 產生 iOS 圖示與啟動畫面 |
+| `node scripts/ios-assets.mjs` | 產生 iOS 圖示與啟動畫面（原生 App，以及主畫面網頁 App 的啟動畫面） |
 | `npm run ios:sync` | 建置並同步到 iOS 專案 |
 
 ## 7. 常見問題
 
 **Q：手機上沒看到更新？**
-從多工畫面把 App 滑掉再打開，必要時再重開一次。也可以先到 GitHub 的 Actions 確認部署是綠色勾勾。
+看到「有新版本」提示後，從多工畫面把 App 滑掉再打開。沒出現提示就再滑掉重開一次，或先到 GitHub 的 Actions 確認部署是綠色勾勾。
 
 **Q：Actions 出現紅色叉叉？**
 點進失敗的流程，展開紅色的步驟看錯誤訊息。最常見的是型別錯誤：在電腦執行 `npm run typecheck` 修正後再 push。

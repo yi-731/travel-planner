@@ -5,7 +5,7 @@
 ## 這是什麼
 iPhone 旅遊 App：行程規劃、導航、天氣、記帳、試算表匯入／Google 試算表同步、AI 助理。
 同一份程式碼：
-- **PWA**：部署到 GitHub Pages，iPhone Safari →「分享」→「加入主畫面」安裝（免費）。
+- **PWA**：部署到 GitHub Pages，iPhone Safari →「⋯」→「分享」→「加入主畫面」安裝（免費）。
 - **原生 iOS App**：Capacitor 包裝（`ios/` 資料夾），用 GitHub Actions 建置上傳 TestFlight（需 Apple Developer 帳號）。
 
 ## 指令
@@ -43,6 +43,14 @@ src/
 9. 新增彈出頁：`store/ui.ts` 的 `SheetRoute` 加型別 → `app/sheetRegistry.tsx` 註冊 → 在 features 建元件（default export）。
 10. 純邏輯寫測試（`*.test.ts` 放在同資料夾）。
 11. iPhone 細節：觸控目標 ≥ 44px；注意瀏海與底部安全區（env(safe-area-inset-*)）；輸入框字級 ≥ 16px（避免 iOS 自動放大）；`100dvh` 而非 `100vh`。
+
+## PWA 與原生 App 設定
+- **最低 iOS 16.4**：Vite 預設建置目標是 Safari 16.4，CSS 也用到 color-mix()。`ios/App/App.xcodeproj/project.pbxproj` 的 `IPHONEOS_DEPLOYMENT_TARGET` 同樣是 16.4，兩邊要一致。
+- **PWA 更新**：`vite.config.ts` 的 `registerType: 'prompt'`；新版先等待、跳出「有新版本」提示，下次完全關閉再開才生效（`src/app/pwa.ts`）。不要加 `skipWaiting`。
+- **主畫面網頁 App 的啟動畫面**：`node scripts/ios-assets.mjs` 產生 `public/apple-splash-*.png` 並寫進 `index.html`。使用者要把主畫面的 App 刪掉再重新加入，才會看到新的啟動畫面（`index.html` 的狀態列設定也一樣）；深淺色可能固定為加入時的外觀。
+- **新增原生外掛**（`@capacitor/*`）：看外掛 README 的 Privacy Manifest 段落，把要求的 API 類別加進 `ios/App/App/PrivacyInfo.xcprivacy`；需要的權限說明加進 `Info.plist`（繁體中文、照實寫用途）。
+- **開機保險**：`index.html` 有一段不依賴主程式的小腳本，8 秒後畫面還是空的（程式載入失敗、資料庫沒回應）就關掉原生啟動畫面，顯示說明與「重新載入」按鈕；App 畫出來後自動移除。
+- `project.pbxproj` 沒有 Xcode 也能手改：新增的資源檔要同時加 PBXFileReference、PBXBuildFile、App 群組的 children、Resources build phase 四處。
 
 ## 設計語言
 參考圖：大字襯線城市名（Instrument Serif）、霧面玻璃卡片疊在日落橘光球上、黑色膠囊按鈕＋橘色圓形箭頭（`<Button variant="go">`）、浮動黑色分頁列。
