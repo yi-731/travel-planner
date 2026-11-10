@@ -188,6 +188,8 @@ export interface Reminder {
   title: string;
   body: string;
   at: Date;
+  /** 點通知時帶回的資料（用來打開對應行程點） */
+  extra?: { tripId: string; itemId: string };
 }
 
 /** 出發提醒：原生 App 用本機通知；網頁版不支援（回傳 false） */
@@ -202,12 +204,31 @@ export async function scheduleReminders(reminders: Reminder[]): Promise<boolean>
     const future = reminders.filter((r) => r.at.getTime() > Date.now()).slice(0, 60);
     if (future.length)
       await LocalNotifications.schedule({
-        notifications: future.map((r) => ({ id: r.id, title: r.title, body: r.body, schedule: { at: r.at, allowWhileIdle: true } })),
+        notifications: future.map((r) => ({ id: r.id, title: r.title, body: r.body, extra: r.extra, schedule: { at: r.at, allowWhileIdle: true } })),
       });
     return true;
   } catch {
     return false;
   }
+}
+
+/** 使用者點了出發提醒通知 → cb(extra)。回傳取消監聽的函式。網頁版不做事。 */
+export function onReminderTap(cb: (extra: { tripId: string; itemId: string }) => void): () => void {
+  if (!isNative) return () => {};
+  let remove: (() => void) | null = null;
+  let cancelled = false;
+  void import('@capacitor/local-notifications').then(async ({ LocalNotifications }) => {
+    const h = await LocalNotifications.addListener('localNotificationActionPerformed', (ev) => {
+      const x = ev.notification.extra as { tripId?: unknown; itemId?: unknown } | undefined;
+      if (x && typeof x.tripId === 'string' && typeof x.itemId === 'string') cb({ tripId: x.tripId, itemId: x.itemId });
+    });
+    if (cancelled) void h.remove();
+    else remove = () => void h.remove();
+  });
+  return () => {
+    cancelled = true;
+    remove?.();
+  };
 }
 
 /** 原生 App 狀態列配色跟著主題 */

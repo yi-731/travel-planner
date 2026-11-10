@@ -213,7 +213,7 @@ export function TripMap({ stops, selectedId, onSelect, onOpen, city, dark, frame
         zoomControl={false}
         attributionControl={false}
       >
-        <TileLayer url={tileUrl(dark)} subdomains="abc" maxZoom={20} attribution={TILE_ATTRIBUTION} eventHandlers={tiles.handlers} />
+        <TileLayer url={tileUrl(dark)} maxZoom={19} attribution={TILE_ATTRIBUTION} className={dark ? s.tilesDark : s.tilesLight} eventHandlers={tiles.handlers} />
         <AttributionControl position="bottomright" prefix={false} />
         {line.length >= 2 && (
           <Polyline

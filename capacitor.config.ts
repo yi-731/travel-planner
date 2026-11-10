@@ -15,13 +15,13 @@ const config: CapacitorConfig = {
     // 這不是顯示名稱：App 在主畫面的名字由 appName 與 Info.plist 的 CFBundleDisplayName 決定。
     scheme: 'App',
     // 網頁還沒畫出來前的底色，和啟動畫面、淺色主題背景一致，避免閃白
-    backgroundColor: '#ECEAE6',
+    backgroundColor: '#ECEBE7',
   },
   plugins: {
     SplashScreen: {
       // 資料從 IndexedDB 讀完後由 App 呼叫 hideSplash() 關閉（src/platform）
       launchAutoHide: false,
-      backgroundColor: '#ECEAE6',
+      backgroundColor: '#ECEBE7',
       showSpinner: false,
     },
     LocalNotifications: {},

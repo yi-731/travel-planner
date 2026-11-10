@@ -1,7 +1,10 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, URL } from 'node:url';
+
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 
 // BASE_PATH：GitHub Pages 部署在 /<repo>/ 底下時設定（例如 /travel-planner/）；
 // Capacitor iOS 與本機開發用預設的 '/'。
@@ -9,6 +12,9 @@ const base = process.env.BASE_PATH ?? '/';
 
 export default defineConfig({
   base,
+  define: {
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(pkg.version),
+  },
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
@@ -27,8 +33,8 @@ export default defineConfig({
         scope: base,
         display: 'standalone',
         orientation: 'portrait',
-        background_color: '#ECEAE6',
-        theme_color: '#ECEAE6',
+        background_color: '#ECEBE7',
+        theme_color: '#ECEBE7',
         icons: [
           { src: 'pwa-64x64.png', sizes: '64x64', type: 'image/png' },
           { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
@@ -42,7 +48,7 @@ export default defineConfig({
         runtimeCaching: [
           {
             // 地圖圖磚：離線時也能看到看過的地圖
-            urlPattern: /^https:\/\/[abc]\.basemaps\.cartocdn\.com\/.*/,
+            urlPattern: /^https:\/\/tile\.openstreetmap\.org\/.*/,
             handler: 'CacheFirst',
             options: {
               cacheName: 'map-tiles',

@@ -17,6 +17,9 @@
   background: var(--surface-2);
 }
 .leaflet { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--surface-2); font-family: var(--f-ui); }
+/* OSM 圖磚的柔和配色：淺色降低彩度帶一點暖色；深色反轉後轉回原色相 */
+.tilesLight { filter: saturate(0.5) sepia(0.12) contrast(0.96) brightness(1.04); }
+.tilesDark { filter: invert(1) hue-rotate(180deg) saturate(0.45) brightness(0.82) contrast(0.9); }
 .mapCard :global(.leaflet-container) { font-family: var(--f-ui); -webkit-tap-highlight-color: transparent; }
 
 /* 圖磚來源標示：小字、玻璃底 */

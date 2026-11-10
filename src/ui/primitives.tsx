@@ -1,4 +1,4 @@
-import type { CSSProperties, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
+import type { ComponentProps, CSSProperties, ReactNode } from 'react';
 import { useId } from 'react';
 import { haptic } from '@/platform';
 import { Icon, type IconName } from './Icon';
@@ -98,7 +98,7 @@ export function Tile({ label, value, sub, hot, onClick, href }: TileProps) {
   );
   if (href)
     return (
-      <a className={cls(s.tile, hot && s.tileHot)} href={href} target="_blank" rel="noopener noreferrer">
+      <a className={cls(s.tile, hot && s.tileHot)} href={href} target="_blank" rel="noopener noreferrer" onClick={() => void haptic('light')}>
         {body}
       </a>
     );
@@ -171,17 +171,18 @@ export function Field({ label, hint, children, id }: { label: ReactNode; hint?: 
   );
 }
 
-export function TextInput({ label, hint, ...p }: { label: ReactNode; hint?: ReactNode } & InputHTMLAttributes<HTMLInputElement>) {
-  return <Field label={label} hint={hint} id={p.id}>{(id) => <input className={s.input} id={id} {...p} />}</Field>;
+// React 19：ref 是一般 prop，ComponentProps 已包含 ref
+export function TextInput({ label, hint, className, ...p }: { label: ReactNode; hint?: ReactNode } & ComponentProps<'input'>) {
+  return <Field label={label} hint={hint} id={p.id}>{(id) => <input {...p} id={id} className={cls(s.input, className)} />}</Field>;
 }
-export function TextArea({ label, hint, ...p }: { label: ReactNode; hint?: ReactNode } & TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <Field label={label} hint={hint} id={p.id}>{(id) => <textarea className={s.input} id={id} rows={3} {...p} />}</Field>;
+export function TextArea({ label, hint, className, ...p }: { label: ReactNode; hint?: ReactNode } & ComponentProps<'textarea'>) {
+  return <Field label={label} hint={hint} id={p.id}>{(id) => <textarea rows={3} {...p} id={id} className={cls(s.input, className)} />}</Field>;
 }
-export function Select({ label, hint, children, ...p }: { label: ReactNode; hint?: ReactNode; children: ReactNode } & SelectHTMLAttributes<HTMLSelectElement>) {
+export function Select({ label, hint, children, className, ...p }: { label: ReactNode; hint?: ReactNode; children: ReactNode } & ComponentProps<'select'>) {
   return (
     <Field label={label} hint={hint} id={p.id}>
       {(id) => (
-        <select className={s.input} id={id} {...p}>
+        <select {...p} id={id} className={cls(s.input, className)}>
           {children}
         </select>
       )}

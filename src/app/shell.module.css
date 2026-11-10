@@ -14,7 +14,7 @@
 .chipText b { font-size: 15px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Tab bar */
-.tabbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(12px + env(safe-area-inset-bottom, 0px)); z-index: 30; background: var(--night); border-radius: var(--r-pill); padding: 6px; display: flex; gap: 2px; box-shadow: var(--shadow-float); max-width: calc(100% - 24px); }
+.tabbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(12px + env(safe-area-inset-bottom, 0px)); z-index: 30; background: var(--night); border-radius: var(--r-pill); padding: 6px; display: flex; gap: 2px; box-shadow: var(--shadow-float), inset 0 0 0 1px var(--line); max-width: calc(100% - 24px); }
 .tab { position: relative; height: 48px; min-width: 50px; border-radius: var(--r-pill); display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--night-muted); padding: 0 13px; font-size: 13px; font-weight: 650; white-space: nowrap; transition: color var(--dur-2); }
 .tab[aria-selected='true'] { color: var(--accent-ink); padding: 0 16px 0 14px; }
 .tabPill { position: absolute; inset: 0; border-radius: var(--r-pill); background: var(--accent); z-index: -1; }

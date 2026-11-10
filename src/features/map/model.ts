@@ -87,13 +87,14 @@ export function framing(stops: Stop[], city?: LatLng | null): Framing {
 /* ---------------- 圖磚 ---------------- */
 
 export const TILE_ATTRIBUTION =
-  '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>';
+  '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>';
 
-/** CARTO 圖磚：淺色用 Voyager、深色用 Dark Matter（{r} 在高解析螢幕換成 @2x） */
-export const tileUrl = (dark: boolean) =>
-  dark
-    ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-    : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+/**
+ * OpenStreetMap 標準圖磚（免金鑰；依 OSM 使用政策需標示來源、勿大量下載）。
+ * 淺色／深色的柔和配色由 map.module.css 對圖磚層套 CSS 濾鏡完成（深色＝反轉＋色相旋轉），
+ * 因此不分主題都是同一個網址。日後要換成 MapTiler／Stadia 等付費圖磚，只要改這裡與 vite.config.ts 的快取規則。
+ */
+export const tileUrl = (_dark: boolean) => 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
 /* ---------------- 外部連結 ---------------- */
 

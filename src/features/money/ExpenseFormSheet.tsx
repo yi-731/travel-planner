@@ -3,7 +3,7 @@
  * - 表單內容存在元件狀態，資料在背景更新也不會洗掉正在輸入的內容。
  * - 有改動時往下滑或點背景關閉，會先問要不要放棄。
  * - 收據照片存在 IndexedDB（blobStore），這裡負責清掉沒用到的照片。
- * - prefill 同時帶有金額與收據 → 視為 AI 辨識結果（由「拍收據」帶入）。
+ * - fromAI：prefill 是 AI 收據辨識結果（由「拍收據」帶入），表單會提示使用者確認。
  */
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { expenseCategory } from '@/domain/constants';
@@ -32,7 +32,7 @@ import s from './money.module.css';
 const OTHER = '__other';
 const DELETE_WINDOW_MS = 4000;
 
-export default function ExpenseFormSheet({ expenseId, prefill }: { expenseId?: string; prefill?: Partial<Expense> }) {
+export default function ExpenseFormSheet({ expenseId, prefill, fromAI }: { expenseId?: string; prefill?: Partial<Expense>; fromAI?: boolean }) {
   const trip = useActiveTrip();
   const [original] = useState<Expense | null>(() => (expenseId && trip ? (trip.expenses.find((e) => e.id === expenseId) ?? null) : null));
   if (!trip)
@@ -51,7 +51,7 @@ export default function ExpenseFormSheet({ expenseId, prefill }: { expenseId?: s
         </Empty>
       </Sheet>
     );
-  return <ExpenseForm trip={trip} original={original} prefill={prefill} />;
+  return <ExpenseForm trip={trip} original={original} prefill={prefill} fromAI={!!fromAI} />;
 }
 
 interface Draft {
@@ -82,7 +82,7 @@ function initialDraft(trip: Trip, src: Partial<Expense> | null, selected: ISODat
   };
 }
 
-function ExpenseForm({ trip, original, prefill }: { trip: Trip; original: Expense | null; prefill?: Partial<Expense> }) {
+function ExpenseForm({ trip, original, prefill, fromAI: aiPrefill }: { trip: Trip; original: Expense | null; prefill?: Partial<Expense>; fromAI: boolean }) {
   const ui = useUI;
   const upsertExpense = useData((st) => st.upsertExpense);
   const deleteExpense = useData((st) => st.deleteExpense);
@@ -101,7 +101,7 @@ function ExpenseForm({ trip, original, prefill }: { trip: Trip; original: Expens
 
   // 這次開表單才新增的照片（含「拍收據」帶進來的）；沒存檔就要清掉
   const fresh = useRef<Set<string>>(new Set(!original && prefill?.receiptBlobKey ? [prefill.receiptBlobKey] : []));
-  const fromAI = !original && prefill?.amount != null && !!prefill.receiptBlobKey;
+  const fromAI = !original && aiPrefill;
 
   useEffect(() => {
     if (!armedDelete) return;

@@ -143,10 +143,9 @@ describe('text helpers', () => {
 });
 
 describe('tiles and links', () => {
-  it('picks CARTO tiles by theme', () => {
-    expect(tileUrl(false)).toContain('/rastertiles/voyager/');
-    expect(tileUrl(true)).toContain('/dark_all/');
-    expect(tileUrl(true)).toContain('{r}');
+  it('uses keyless OpenStreetMap tiles for both themes', () => {
+    expect(tileUrl(false)).toBe('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
+    expect(tileUrl(true)).toBe(tileUrl(false));
   });
   it('has four quick links to Google Maps', () => {
     expect(QUICK_LINKS.map((q) => q.label)).toEqual(['即時路況', '附近美食', '便利商店', '車站']);

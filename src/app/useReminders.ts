@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { fromMinutes, parseISODate, toMinutes } from '@/domain/dates';
 import { daySegments } from '@/domain/schedule';
 import type { Trip } from '@/domain/types';
-import { isNative, scheduleReminders, type Reminder } from '@/platform';
+import { isNative, onReminderTap, scheduleReminders, type Reminder } from '@/platform';
 import { useActiveTrip, useData } from '@/store/data';
 import { useUI } from '@/store/ui';
 
@@ -58,6 +58,7 @@ export function buildReminders(trip: Trip, leadMin: number, now: number = Date.n
       title: `出發提醒：${it.title.trim() || '下一站'}`,
       body: departAt != null ? `${time} 抵達 · 最晚 ${fromMinutes(departAt)} 出發 · 點開導航` : `${time} 抵達 · 點開導航`,
       at,
+      extra: { tripId: trip.id, itemId: it.id },
     });
   }
   return out.sort((a, b) => a.at.getTime() - b.at.getTime());
@@ -85,6 +86,21 @@ export function useReminders(): void {
   const enabled = useData((s) => s.settings.reminders);
   const leadMin = useData((s) => s.settings.reminderLeadMin);
   const trip = useActiveTrip();
+
+  // 點通知 → 切到那個行程並打開該站詳情（可一鍵導航）
+  useEffect(
+    () =>
+      onReminderTap(({ tripId, itemId }) => {
+        const data = useData.getState();
+        if (!data.trips[tripId]) return;
+        data.setActiveTrip(tripId);
+        const ui = useUI.getState();
+        ui.setTab('home');
+        ui.closeAllSheets();
+        ui.openSheet({ name: 'place', itemId });
+      }),
+    [],
+  );
 
   // 回到前景時重算一次：移除已過的提醒、補上原本超過通知數量上限的
   const [tick, setTick] = useState(0);

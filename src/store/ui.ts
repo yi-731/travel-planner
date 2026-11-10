@@ -17,7 +17,7 @@ export type SheetRoute =
   | { name: 'tripPicker' }
   | { name: 'newTrip' }
   | { name: 'tripSettings' }
-  | { name: 'expenseForm'; expenseId?: string; prefill?: Partial<Expense> }
+  | { name: 'expenseForm'; expenseId?: string; prefill?: Partial<Expense>; /** prefill 來自 AI 收據辨識 */ fromAI?: boolean }
   | { name: 'import' }
   | { name: 'appSettings' };
 

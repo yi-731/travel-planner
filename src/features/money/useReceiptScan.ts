@@ -39,7 +39,7 @@ export function useReceiptScan(tripId: string) {
     try {
       const r = await scanReceipt(trip, blob);
       void haptic('success');
-      useUI.getState().openSheet({ name: 'expenseForm', prefill: { ...r, receiptBlobKey } });
+      useUI.getState().openSheet({ name: 'expenseForm', prefill: { ...r, receiptBlobKey }, fromAI: true });
     } catch (e) {
       const st = useUI.getState();
       if (!isAbort(e)) {

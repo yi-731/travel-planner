@@ -27,22 +27,17 @@ const VIEWS: Record<Tab, React.LazyExoticComponent<() => React.JSX.Element>> = {
 export function AppShell() {
   const tab = useUI((st) => st.tab);
   const trip = useActiveTrip();
+  const sheetOpen = useUI((st) => st.sheets.length > 0);
   const View = VIEWS[tab];
 
   useEffect(() => {
     window.scrollTo({ top: 0 });
   }, [tab]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') useUI.getState().closeSheet();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
 
   return (
     <div className={s.app}>
+      <div inert={sheetOpen} style={{ display: 'contents' }}>
       <TopBar />
       <main className={s.main}>
         <AnimatePresence mode="wait" initial={false}>
@@ -59,6 +54,7 @@ export function AppShell() {
         </AnimatePresence>
       </main>
       <TabBar />
+      </div>
       <SheetHost />
       <Toasts />
     </div>

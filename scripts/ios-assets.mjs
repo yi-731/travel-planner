@@ -21,7 +21,7 @@ if (!existsSync(assets)) {
 }
 
 // 顏色和 src/styles/tokens.css 一致
-const LIGHT = { bg: '#ECEAE6', ink: '#1A1918', glow: 0.22 };
+const LIGHT = { bg: '#ECEBE7', ink: '#1A1918', glow: 0.22 };
 const DARK = { bg: '#0F0F11', ink: '#F6F3EE', glow: 0.38 };
 const NIGHT = '#1A1918';
 

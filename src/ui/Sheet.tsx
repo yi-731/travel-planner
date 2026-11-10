@@ -1,5 +1,5 @@
 import { motion, useDragControls, type PanInfo } from 'motion/react';
-import type { ReactNode } from 'react';
+import { useEffect, useId, type ReactNode } from 'react';
 import { useUI } from '@/store/ui';
 import { Icon } from './Icon';
 import s from './ui.module.css';
@@ -16,16 +16,27 @@ interface SheetProps {
   onClose?: () => void;
   /** 頂部是否不顯示標題列（例如地點頁自訂大圖頭） */
   bare?: boolean;
+  /** 沒有標題文字時的無障礙名稱 */
+  ariaLabel?: string;
 }
 
 /**
  * 底部彈出頁（iOS 風格）：可拖曳把手往下滑關閉、點背景關閉、Esc 關閉。
  * 由 SheetHost 負責進出場動畫，元件本身只放內容。
  */
-export function Sheet({ title, eyebrow, children, footer, headerExtra, onClose, bare }: SheetProps) {
+export function Sheet({ title, eyebrow, children, footer, headerExtra, onClose, bare, ariaLabel }: SheetProps) {
   const closeSheet = useUI((st) => st.closeSheet);
   const close = onClose ?? closeSheet;
   const controls = useDragControls();
+  const labelId = useId();
+  // Esc 關閉（呼叫本頁的 onClose，表單可以先確認未儲存的變更）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [close]);
   const onDragEnd = (_: unknown, info: PanInfo) => {
     if (info.offset.y > 110 || info.velocity.y > 600) close();
   };
@@ -37,6 +48,8 @@ export function Sheet({ title, eyebrow, children, footer, headerExtra, onClose, 
           className={`${s.sheet} ${footer ? s.hasFoot : ''}`}
           role="dialog"
           aria-modal="true"
+          aria-label={ariaLabel}
+          aria-labelledby={!ariaLabel && (title || eyebrow) && !bare ? labelId : undefined}
           initial={{ y: '100%' }}
           animate={{ y: 0 }}
           exit={{ y: '100%' }}
@@ -52,7 +65,7 @@ export function Sheet({ title, eyebrow, children, footer, headerExtra, onClose, 
             <div className={s.grab} />
             {!bare && (
               <div className={s.sheetTitleRow}>
-                <div className={s.sheetTitles}>
+                <div className={s.sheetTitles} id={labelId}>
                   {eyebrow && <div className="eyebrow">{eyebrow}</div>}
                   {title && <h2 className={s.sheetTitle}>{title}</h2>}
                 </div>
